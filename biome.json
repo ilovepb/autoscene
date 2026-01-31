@@ -5,7 +5,22 @@
   "formatter": { "enabled": true, "indentStyle": "space" },
   "linter": {
     "enabled": true,
-    "rules": { "recommended": false },
+    "rules": {
+      "recommended": false,
+      "style": {
+        "noRestrictedImports": {
+          "level": "error",
+          "options": {
+            "patterns": [
+              {
+                "group": ["./*", "../*"],
+                "message": "Use @/ path alias instead of relative imports."
+              }
+            ]
+          }
+        }
+      }
+    },
     "includes": ["**", "!dist", "**", "!dist"]
   },
   "css": { "parser": { "tailwindDirectives": true } },
@@ -446,7 +461,7 @@
     {
       "includes": ["**/*.{ts,tsx}"],
       "linter": {
-        "rules": { "style": { "useComponentExportOnlyModules": "error" } }
+        "rules": { "style": { "useComponentExportOnlyModules": "off" } }
       }
     },
     {
