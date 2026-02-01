@@ -595,6 +595,16 @@
           "onemptied"
         ]
       }
+    },
+    {
+      "includes": ["api/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": "off"
+          }
+        }
+      }
     }
   ],
   "assist": {

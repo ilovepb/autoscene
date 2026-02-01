@@ -45,7 +45,7 @@ export default defineConfig({
                 body,
               });
               const { handleChatRequest } =
-                await server.ssrLoadModule("@/server/chat");
+                await server.ssrLoadModule("/api/chat");
               const response: Response = await handleChatRequest(request);
               res.writeHead(response.status, {
                 "Content-Type":

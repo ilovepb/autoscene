@@ -65,8 +65,8 @@ Key enforced rules:
 ### `src/providers/`
 - `ThemeProvider.tsx` — React context for theme (`dark`/`light`/`system`); persists to localStorage key `autoscene-theme`
 
-### `src/server/` — Server-side (Vite SSR-loaded)
-- `chat.ts` — AI chat handler via AI SDK `streamText`; tools include `load_skills` (server-executed, returns skill references), `generate_3d_points`, `image_to_3d`, layer management, and point deletion
+### `api/` — Serverless API (Vercel functions + Vite SSR in dev)
+- `chat.ts` — AI chat handler via AI SDK `streamText`; tools include `load_skills` (server-executed, returns skill references), `generate_3d_points`, `image_to_3d`, layer management, and point deletion. Exports `handleChatRequest` (used by Vite dev middleware) and default `handler` (used by Vercel).
 - `skills.ts` — 6 comprehensive knowledge-domain skills (`advanced-sdf`, `natural-world`, `materials-and-color`, `objects-and-characters`, `math-and-patterns`, `atmosphere-and-fx`) loaded by the LLM via `load_skills` tool before generating code
 
 ## Environment Variables
@@ -105,7 +105,7 @@ Key enforced rules:
 ## Gotchas
 
 - **Relative imports fail lint** — Biome rejects `./` and `../` imports. Always use `@/`.
-- **`/api/chat` is Vite middleware** — defined as a Vite plugin in `vite.config.ts`, not a standalone server. It SSR-loads `@/server/chat` via `server.ssrLoadModule()`.
+- **`/api/chat` is Vite middleware in dev** — defined as a Vite plugin in `vite.config.ts`, SSR-loads `api/chat.ts` via `server.ssrLoadModule()`. In production, Vercel serves it as a serverless function from `api/chat.ts`.
 - **Hidden WebGL canvas** — the Three.js renderer canvas is appended to `document.body` with `display:none`; pixel data is read via `gl.readPixels()` each frame and converted to ASCII.
 - **Procedural code runs in Worker** — 30-second timeout, no point/vertex limits (buffers grow dynamically), seeded PRNG (Mulberry32). Worker is created from a blob URL and terminated after each execution.
 - **Two shadcn registries** — `@shadcn` (default) and `@ai-elements` (AI SDK components). Both in `components.json`.
