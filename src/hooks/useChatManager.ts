@@ -10,8 +10,10 @@ import { estimateDepth, loadDepthModel } from "@/lib/depth";
 import { getAllImages, getImage, storeImage } from "@/lib/imageStore";
 import { buildPointCloud } from "@/lib/pointcloud";
 import {
+  computeLayerBounds,
   executeProceduralCode,
   type GeneratedLayer,
+  type LayerMeta,
   type SceneBounds,
 } from "@/lib/procedural/engine";
 import type { SceneHandle } from "@/lib/scene";
@@ -26,6 +28,16 @@ import {
   parseModelKey,
   saveSettings,
 } from "@/lib/settings";
+
+function formatLayerOutput(layer: GeneratedLayer, meta: LayerMeta): string {
+  const parts: string[] = [];
+  if (layer.count > 0) parts.push(`${layer.count} points`);
+  if (layer.meshVertexCount && layer.meshVertexCount > 0)
+    parts.push(`${Math.floor(layer.meshVertexCount / 3)} triangles`);
+  const b = meta.bounds;
+  const fmt = (n: number) => n.toFixed(2);
+  return `Generated ${parts.join(" + ")} (layer: ${layer.id}, bounds: min=[${b.min.map(fmt)}] max=[${b.max.map(fmt)}] center=[${b.center.map(fmt)}])`;
+}
 
 export interface ChatManagerOptions {
   onTransitionToViewing: () => void;
@@ -42,6 +54,8 @@ export function useChatManager(
   const pendingLayersRef = useRef<GeneratedLayer[]>([]);
   /** Persistent store of all active layers — survives scene disposal/recreation. */
   const activeLayersRef = useRef<Map<string, GeneratedLayer>>(new Map());
+  /** Per-layer spatial metadata sent to the LLM for positioning awareness. */
+  const layerMetaRef = useRef<Map<string, LayerMeta>>(new Map());
   const setImageTo3dProgress = useSetAtom(imageTo3dProgressAtom);
 
   const [selectedModel, setSelectedModel] = useState(
@@ -66,7 +80,7 @@ export function useChatManager(
           }));
           return {
             sceneBounds: boundsRef.current,
-            activeLayers: sceneHandleRef.current?.getLayerIds() ?? [],
+            activeLayers: Array.from(layerMetaRef.current.values()),
             availableImages: images,
           };
         },
@@ -80,13 +94,21 @@ export function useChatManager(
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
     onToolCall: async ({ toolCall }) => {
       if (toolCall.toolName === "generate_3d_points") {
-        const input = toolCall.input as { code: string };
+        const input = toolCall.input as {
+          code: string;
+          description?: string;
+        };
         try {
           const layer: GeneratedLayer = await executeProceduralCode(
             input.code,
             boundsRef.current,
           );
           activeLayersRef.current.set(layer.id, layer);
+          const meta: LayerMeta = {
+            ...computeLayerBounds(layer),
+            description: input.description ?? "",
+          };
+          layerMetaRef.current.set(layer.id, meta);
           const handle = sceneHandleRef.current;
           if (handle) {
             handle.addLayer(layer);
@@ -97,7 +119,7 @@ export function useChatManager(
           addToolOutput({
             tool: "generate_3d_points",
             toolCallId: toolCall.toolCallId,
-            output: `Generated ${layer.count} points (layer: ${layer.id})`,
+            output: formatLayerOutput(layer, meta),
           });
         } catch (err) {
           addToolOutput({
@@ -144,6 +166,11 @@ export function useChatManager(
             count: pointCloud.count,
           };
           activeLayersRef.current.set(layer.id, layer);
+          const meta: LayerMeta = {
+            ...computeLayerBounds(layer),
+            description: `image: ${entry.filename}`,
+          };
+          layerMetaRef.current.set(layer.id, meta);
           const handle = sceneHandleRef.current;
           if (handle) {
             handle.addLayer(layer);
@@ -154,7 +181,7 @@ export function useChatManager(
           addToolOutput({
             tool: "image_to_3d",
             toolCallId: toolCall.toolCallId,
-            output: `Converted "${entry.filename}" to 3D: ${pointCloud.count} points (layer: ${layer.id})`,
+            output: formatLayerOutput(layer, meta),
           });
         } catch (err) {
           addToolOutput({
@@ -175,6 +202,7 @@ export function useChatManager(
           if (exists) {
             handle.removeLayer(input.layerId);
             activeLayersRef.current.delete(input.layerId);
+            layerMetaRef.current.delete(input.layerId);
             addToolOutput({
               tool: "remove_layer",
               toolCallId: toolCall.toolCallId,
@@ -195,6 +223,7 @@ export function useChatManager(
           const count = handle.getLayerIds().length;
           handle.clearLayers();
           activeLayersRef.current.clear();
+          layerMetaRef.current.clear();
           addToolOutput({
             tool: "clear_all_layers",
             toolCallId: toolCall.toolCallId,

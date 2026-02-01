@@ -27,11 +27,15 @@ const fragmentShader = /* glsl */ `
     vec2 cellCenter = (cell + 0.5) / uGridDims;
     vec4 sceneColor = texture2D(uScene, cellCenter);
 
-    // BT.601 luminance
+    // BT.601 luminance with gamma boost to select denser glyphs.
+    // A lower exponent lifts mid-tones so the ASCII output doesn't
+    // appear too dark — most scene pixels land in the 0.1–0.5 range,
+    // and pow(x, 0.45) maps those to ~0.3–0.7 instead of near-black.
     float lum = dot(sceneColor.rgb, vec3(0.299, 0.587, 0.114));
+    float boostedLum = pow(lum, 0.45);
 
-    // Map luminance to character index
-    float charIdx = floor(lum * (uCharCount - 1.0) + 0.5);
+    // Map boosted luminance to character index
+    float charIdx = floor(boostedLum * (uCharCount - 1.0) + 0.5);
     charIdx = clamp(charIdx, 0.0, uCharCount - 1.0);
 
     // Find the glyph position in the atlas
@@ -47,8 +51,10 @@ const fragmentShader = /* glsl */ `
     // Sample the glyph (white on black)
     float glyphAlpha = texture2D(uAtlas, atlasUv).r;
 
-    // Output: scene color tinted by glyph shape
-    gl_FragColor = vec4(sceneColor.rgb * glyphAlpha, 1.0);
+    // Output: scene color tinted by glyph shape, boosted to compensate
+    // for glyph sparsity (glyphs cover ~30-50% of their cell area, so
+    // the effective brightness is much lower than the raw color).
+    gl_FragColor = vec4(sceneColor.rgb * glyphAlpha * 1.7, 1.0);
   }
 `;
 

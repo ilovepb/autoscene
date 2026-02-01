@@ -26,11 +26,12 @@ export function AsciiViewer({ pointCloud, overlay, onSceneReady }: Props) {
 
   const onSceneReadyRef = useRef(onSceneReady);
   onSceneReadyRef.current = onSceneReady;
+  const activeHandleRef = useRef<SceneHandle | null>(null);
 
-  const fireSceneReady = useCallback(
-    (handle: SceneHandle | null) => onSceneReadyRef.current?.(handle),
-    [],
-  );
+  const fireSceneReady = useCallback((handle: SceneHandle | null) => {
+    activeHandleRef.current = handle;
+    onSceneReadyRef.current?.(handle);
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;

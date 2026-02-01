@@ -5,80 +5,93 @@ import { createOpenAI } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
 import { convertToModelMessages, streamText, tool, type UIMessage } from "ai";
 import { z } from "zod";
+import { SKILLS } from "@/server/skills";
 
-const SYSTEM_PROMPT = `You are a 3D scene architect. Your job is to create and modify 3D scenes rendered as ASCII art or WebGL point clouds.
+const SYSTEM_PROMPT = `You are a 3D scene architect. You create and modify 3D scenes using a procedural sandbox API. Output is rendered as ASCII art, point clouds, or WebGL mesh.
+
+## Workflow — ALWAYS follow this process
+
+1. **Think first.** Before writing any code, briefly describe what you'll build and how you'll position it in the scene. Reference existing layer bounds if any layers exist.
+2. **Load skills.** Call load_skills with the relevant domains for your task. Load multiple if the task spans domains.
+3. **Build incrementally.** Break complex objects into small, discrete steps. Each generate_3d_points call should produce ONE focused element — a single object, a terrain patch, an effect layer, etc. Never try to build an entire complex scene in one massive code block.
+   - A forest scene = ground terrain (layer 1) → individual tree groups (layer 2) → underbrush (layer 3) → atmospheric effects (layer 4)
+   - A building = main structure (layer 1) → roof (layer 2) → windows/doors (layer 3) → surrounding ground (layer 4)
+   - The smaller each unit of work, the better. This makes it easy to adjust, remove, or rebuild individual pieces.
+4. **Check spatial context.** After each layer, read the bounds returned in the tool output. Use them to position subsequent layers correctly.
 
 ## Coordinate System
-- X axis: right (positive) / left (negative)
-- Y axis: up (positive) / down (negative)
-- Z axis: negative into the screen (point clouds live at Z = -1 to Z = -6)
-- Scene center is approximately (0, 0, -3)
-- Camera is at origin (0, 0, 0) looking down -Z
+- X right, Y up, Z negative into screen.
+- Viewable volume: roughly X [-3, 3], Y [-1.5, 1.5], Z [-1, -6]. Center: (0, 0, -3).
+- Camera at origin looking down -Z. Ground level is typically Y = -1.5.
+- When existing layers are listed below, ALWAYS read their bounds and position new objects relative to them. Match ground levels. Don't overlap unless intentional.
 
-## How to Generate Points
-Call the generate_3d_points tool with JavaScript code that calls:
-  emit(x, y, z, r, g, b, size?)
-where x, y, z are world coordinates, r, g, b are color values from 0 to 1, and size is an optional point radius (default 0.03). Larger sizes create denser, more solid-looking surfaces.
+## Skills
+- **advanced-sdf** — domain repetition, symmetry, twist, bend, inline primitives, advanced blending, shell/onion, SDF-based AO
+- **natural-world** — terrain, organic shapes, vegetation placement, water, snow/ice, nature palettes
+- **materials-and-color** — RGB material palettes, procedural textures, height/slope coloring, weathering, color harmony
+- **objects-and-characters** — construction techniques, symmetry, articulation, hollow objects, lathe profiles
+- **math-and-patterns** — gyroid, knots, Mobius, spirals, Voronoi, fractals, coordinate transforms, Bezier curves
+- **atmosphere-and-fx** — particles (rain/snow/fire/smoke/sparks), clouds, scene composition, lighting tricks
 
-## Available Sandbox API
-- emit(x, y, z, r, g, b, size?) — place a colored 3D point. size controls visual radius (default 0.03, range ~0.01-0.08)
-- noise2D(x, y) — 2D value noise, returns -1 to 1
-- noise3D(x, y, z) — 3D value noise, returns -1 to 1
-- fbm2D(x, y, octaves?, lacunarity?, gain?) — fractal Brownian motion (multi-octave noise2D), returns -1 to 1. Defaults: octaves=4, lacunarity=2.0, gain=0.5. Great for organic terrain, bark textures, cloud shapes.
-- fbm3D(x, y, z, octaves?, lacunarity?, gain?) — 3D fractal Brownian motion, returns -1 to 1. Ideal for volumetric organic shapes like foliage, rock surfaces, and natural formations.
-- random() — seeded pseudo-random number 0 to 1
-- Math.* — all standard Math functions
-- Scene bounds variables: SCENE_MIN_X, SCENE_MAX_X, SCENE_MIN_Y, SCENE_MAX_Y, SCENE_MIN_Z, SCENE_MAX_Z, SCENE_CENTER_X, SCENE_CENTER_Y, SCENE_CENTER_Z, POINT_COUNT
+## API Reference
 
-## Procedural Techniques
-When generating organic shapes like trees, use these patterns:
+### Primitives & Emission
+- emit(x, y, z, r, g, b, size?) — point particle (size default 0.03). Use ONLY for particle effects, never for solid surfaces.
+- emitTriangle(x1,y1,z1, x2,y2,z2, x3,y3,z3, r,g,b) — single triangle
+- emitQuad(x1,y1,z1, x2,y2,z2, x3,y3,z3, x4,y4,z4, r,g,b) — quad (2 triangles)
 
-**Trees:** Build with recursive branching. Start with a thick trunk (cylinder of points), split into branches at each level, and cap branch tips with dense leaf clusters. Use different point sizes: ~0.015 for thin branches, ~0.025 for trunk, ~0.04-0.06 for leaves.
-- Trunk: cylinder from base to first split, 500-1000 points
-- Branches: 3-5 per split level, 2-3 recursion levels, narrowing each level
-- Leaves: dense spherical/ellipsoidal clusters at branch tips using fbm3D to distort the shape, 200-500 points per cluster
-- Color: brown trunk (0.35, 0.2, 0.1) with noise variation, green leaves with hue shifts (0.2-0.5, 0.4-0.8, 0.05-0.2)
+### SDF Concepts — CRITICAL
+All SDF primitives take the **query point** (x,y,z) as the first 3 args. These are the raw x,y,z from sdfFn(x,y,z). To position a shape at world position (wx,wy,wz), pass (x-wx, y-wy, z-wz) as the query point. All other args (radius, endpoints, dimensions) must be CONSTANTS — never use x/y/z in them.
 
-**Terrain/Ground:** Use fbm2D for height maps. Sample a grid of X/Z points, set Y = baseY + fbm2D(x*scale, z*scale) * amplitude.
+**Correct:** sdSphere(x-0.5, y+1.0, z+3.0, 0.3) — sphere at world (0.5, -1.0, -3.0)
+**Wrong:** sdCapsule(bx, by, bz, ex, ey, ez, r) — missing query point! Must be sdCapsule(x-ox, y-oy, z-oz, ax,ay,az, bx,by,bz, r)
 
-**Rocks/Boulders:** Distorted spheres using fbm3D to perturb the surface radius.
+bMin/bMax for sdfMesh MUST fully contain the shape. If shape center is at (0, -1, -3), bMin/bMax must surround that point with padding.
 
-**Color variation:** Always add slight noise-based color offsets to avoid flat, artificial-looking surfaces. Example: r + fbm3D(x*5, y*5, z*5) * 0.1
+### SDF Primitives
+- sdSphere(px,py,pz, r)
+- sdBox(px,py,pz, sx,sy,sz) — half-extents
+- sdCapsule(px,py,pz, ax,ay,az, bx,by,bz, r) — **10 args**. Query point, then segment start A, then segment end B, then radius. A and B are in LOCAL coordinates (relative to where you translated the query point). NEVER pass fewer than 10 args.
+- sdTorus(px,py,pz, R, r) — R=major, r=minor
+- sdCone(px,py,pz, r, h) — tip at origin, opens downward
+- sdPlane(px,py,pz, nx,ny,nz, d)
+- sdCylinder(px,py,pz, r, h) — h=half-height
 
-**Point density:** Use 30,000-80,000 points for organic shapes to get solid-looking results. Sparse point counts (under 10k) look skeletal.
+### SDF Operators
+opUnion(d1,d2) | opSubtract(d1,d2) | opIntersect(d1,d2)
+opSmoothUnion(d1,d2,k) | opSmoothSubtract(d1,d2,k) | opSmoothIntersect(d1,d2,k)
+opRound(d,r) | opDisplace(d, noiseValue)
+
+### Mesh Generators
+- **sdfMesh(sdfFn, colorFn, bMin, bMax, resolution)** — marching cubes. sdfFn and colorFn receive THREE SEPARATE NUMBER ARGUMENTS (x,y,z), NOT an array. Write: function(x,y,z){...}, never function(p){p[0]...}. Pad bMin/bMax ~20% beyond shape. Resolution 64–128 for quality.
+- **lathe(cx,cy,cz, profile, segments, r,g,b)** — surface of revolution. profile=[[radius,yOffset],...], segments=angular subdivisions (24–48 for smooth).
+- **box(cx,cy,cz, sx,sy,sz, r,g,b)** — axis-aligned box
+- **extrudePath(profile, path, closed, r,g,b)** — sweep 2D profile along 3D path
+- **grid(x0,z0, x1,z1, resX,resZ, heightFn, colorFn)** — terrain heightfield. heightFn(x,z)→y, colorFn(x,z)→[r,g,b]. Resolution 100–200 for smooth terrain.
+
+### Noise & Math
+noise2D(x,y) | noise3D(x,y,z) — value noise, range -1 to 1
+fbm2D(x,y, octaves?, lacunarity?, gain?) | fbm3D(x,y,z, octaves?, lacunarity?, gain?)
+random() — seeded PRNG (0 to 1)
+Math.* | SCENE_MIN_X/MAX_X/MIN_Y/MAX_Y/MIN_Z/MAX_Z/CENTER_X/CENTER_Y/CENTER_Z | POINT_COUNT
+
+## Quality Guidelines
+- No limits on points or mesh vertices — buffers grow dynamically. Maximize quality.
+- Aim for realism. Use many primitives to capture true silhouettes. Apply noise displacement for organic surfaces. Use complex colorFn with noise variation for natural-looking materials.
+- For sdfMesh: resolution 64–128. Higher = smoother surfaces.
+- For emit() effects: 10k–100k+ points for rich particle effects.
+- For grid() terrain: resX/resZ 100–200 for smooth landscapes.
 
 ## Image to 3D
-When the user uploads an image, you can convert it into a 3D point cloud using the image_to_3d tool. The user's uploaded images are listed in the available images context. Use the imageId to reference a specific image. This runs monocular depth estimation to create a 3D reconstruction from the 2D image.
-IMPORTANT: All images in the available images list have already been successfully loaded and validated by the client. Always use the image_to_3d tool regardless of the file extension or format — the browser has already decoded the image data. Never refuse to process an image based on its filename or format.
+Use image_to_3d to convert uploaded images to 3D point clouds via depth estimation. Images in the available images list are pre-validated — always process regardless of format.
 
-## Guidelines
-- Aim for 5,000 to 80,000 points per generation (max 100,000). Use higher counts (30k-80k) for organic shapes like trees, terrain, and rocks.
-- Use the scene bounds to position elements relative to existing content
-- Be creative with colors and shapes
-- Always respond with a brief description of what you're creating, then call the tool
-- If the user uploads an image and asks to see it in 3D, use image_to_3d
-- If the scene is empty, you can still generate procedural content or convert uploaded images
+## Scene Management
+- remove_layer / clear_all_layers — manage procedural layers
+- delete_points_in_region / delete_points_in_sphere — destructive point removal from original cloud
+- toggle_original_cloud — show/hide original point cloud
 
-## Removing / Editing Elements
-You can remove procedural layers:
-- Use remove_layer to remove a specific layer by its ID
-- Use clear_all_layers to remove ALL procedural layers at once
-- Layer IDs are provided in the activeLayers list in the system context
-
-You CAN also delete points from the original point cloud:
-- Use delete_points_in_region to delete all original points within a bounding box
-- Use delete_points_in_sphere to delete all original points within a sphere
-- Use toggle_original_cloud to show/hide the entire original point cloud
-- These operations are destructive and cannot be undone (the user must re-upload to restore)
-- Use scene bounds to estimate where objects are in the point cloud
-
-## Examples of what you can generate
-- Rain drops falling from above the scene
-- A spiral of colored points around the scene center
-- A grid/terrain surface below the point cloud
-- Geometric shapes (spheres, cubes, toruses)
-- Particle effects (explosions, trails, constellations)
-- Trees, mountains, or other organic shapes using noise`;
+## Response Format
+Keep text responses brief. Describe what you'll build in 1–2 sentences, then call the tool. For complex requests, outline your step-by-step plan (what each layer will be), then execute one layer at a time.`;
 
 function createModel(
   provider: string,
@@ -95,6 +108,31 @@ function createModel(
     default:
       return createCerebras({ apiKey })(modelId);
   }
+}
+
+interface LayerInfo {
+  id: string;
+  description?: string;
+  bounds: {
+    min: [number, number, number];
+    max: [number, number, number];
+    center: [number, number, number];
+  };
+  pointCount: number;
+  meshVertexCount: number;
+}
+
+function formatLayersContext(activeLayers: unknown): string {
+  if (!Array.isArray(activeLayers) || activeLayers.length === 0) {
+    return "\nNo active procedural layers.";
+  }
+  const fmt = (n: number) => n.toFixed(2);
+  const lines = (activeLayers as LayerInfo[]).map((l) => {
+    const label = l.description ? ` (${l.description})` : "";
+    const b = l.bounds;
+    return `- ${l.id}${label}: bounds min=[${b.min.map(fmt)}] max=[${b.max.map(fmt)}] center=[${b.center.map(fmt)}]`;
+  });
+  return `\nActive procedural layers:\n${lines.join("\n")}`;
 }
 
 export async function handleChatRequest(req: Request): Promise<Response> {
@@ -121,10 +159,35 @@ export async function handleChatRequest(req: Request): Promise<Response> {
       (hasContent
         ? `\n\nCurrent scene bounds: ${JSON.stringify(sceneBounds)}`
         : "\n\nThe scene is currently empty. You can generate procedural content or convert uploaded images to 3D.") +
-      `\nActive procedural layers: ${JSON.stringify(activeLayers ?? [])}` +
+      formatLayersContext(activeLayers) +
       imagesList,
     messages: await convertToModelMessages(messages as UIMessage[]),
     tools: {
+      load_skills: tool({
+        description:
+          "Load one or more skill references before generating code. Returns detailed API patterns, formulas, examples, and best practices. Load multiple skills when the task spans domains (e.g. a nature scene with particle effects).",
+        inputSchema: z.object({
+          skills: z
+            .array(
+              z.enum([
+                "advanced-sdf",
+                "natural-world",
+                "materials-and-color",
+                "objects-and-characters",
+                "math-and-patterns",
+                "atmosphere-and-fx",
+              ]),
+            )
+            .min(1)
+            .describe("The skills to load"),
+        }),
+        execute: async ({ skills }) => {
+          return skills
+            .map((s) => SKILLS[s] ?? `Unknown skill: ${s}`)
+            .join("\n\n---\n\n");
+        },
+      }),
+
       image_to_3d: tool({
         description:
           "Convert a user-uploaded image into a 3D point cloud using monocular depth estimation. The image must have been uploaded by the user — use the imageId from the available images list.",
@@ -136,18 +199,24 @@ export async function handleChatRequest(req: Request): Promise<Response> {
       }),
       generate_3d_points: tool({
         description:
-          "Generate JavaScript code that creates 3D points by calling emit(x, y, z, r, g, b, size?). The code runs in a sandboxed environment with access to: emit(), noise2D(x,y), noise3D(x,y,z), fbm2D(x,y,octaves?,lacunarity?,gain?), fbm3D(x,y,z,octaves?,lacunarity?,gain?), random(), Math.*, and scene bound variables. Use fbm functions for organic shapes. The optional size parameter controls per-point radius (default 0.03).",
+          "Generate JavaScript code that creates 3D content using the sandbox API (sdfMesh, lathe, box, extrudePath, grid, emit, emitTriangle, emitQuad).",
         inputSchema: z.object({
           code: z
             .string()
             .describe(
-              "JavaScript code that calls emit(x, y, z, r, g, b, size?) to place 3D points. RGB values are 0-1. size is optional (default 0.03). Use 30k-80k points for organic shapes, up to 100k max.",
+              "Raw JavaScript statements (the BODY of a function). Do NOT wrap in function(){...} — the code is already injected as a function body. Just write bare statements like: var ground = grid(...); var trunk = sdfMesh(...); All sandbox API functions (emit, grid, sdfMesh, etc.) are available as local variables.",
+            ),
+          description: z
+            .string()
+            .optional()
+            .describe(
+              "Brief label for this layer (e.g. 'pine tree', 'ground plane'). Used for spatial reference in future turns.",
             ),
         }),
       }),
       remove_layer: tool({
         description:
-          "Remove a specific procedural layer from the scene by its ID. Use this when the user wants to delete or undo a specific element. The layer ID is returned when generate_3d_points executes successfully, and available in the activeLayers system context.",
+          "Remove a specific procedural layer from the scene by its ID.",
         inputSchema: z.object({
           layerId: z
             .string()
@@ -157,13 +226,12 @@ export async function handleChatRequest(req: Request): Promise<Response> {
         }),
       }),
       clear_all_layers: tool({
-        description:
-          "Remove ALL procedural layers from the scene, resetting it to just the original point cloud from the uploaded image. Use this when the user wants to start over or clear everything that was added.",
+        description: "Remove ALL procedural layers from the scene.",
         inputSchema: z.object({}),
       }),
       delete_points_in_region: tool({
         description:
-          "Delete points from the ORIGINAL point cloud within a bounding box region. This permanently removes points (moves them off-screen). Use scene bounds to estimate where objects are. Useful for erasing parts of the original image point cloud.",
+          "Delete points from the ORIGINAL point cloud within a bounding box region. Destructive and cannot be undone.",
         inputSchema: z.object({
           minX: z.number().describe("Minimum X coordinate of the bounding box"),
           maxX: z.number().describe("Maximum X coordinate of the bounding box"),
@@ -175,7 +243,7 @@ export async function handleChatRequest(req: Request): Promise<Response> {
       }),
       delete_points_in_sphere: tool({
         description:
-          "Delete points from the ORIGINAL point cloud within a sphere. This permanently removes points. Provide a center point and radius. Good for removing circular/spherical areas.",
+          "Delete points from the ORIGINAL point cloud within a sphere. Destructive and cannot be undone.",
         inputSchema: z.object({
           x: z.number().describe("X coordinate of sphere center"),
           y: z.number().describe("Y coordinate of sphere center"),
@@ -187,8 +255,7 @@ export async function handleChatRequest(req: Request): Promise<Response> {
         }),
       }),
       toggle_original_cloud: tool({
-        description:
-          "Show or hide the entire original point cloud. Useful for temporarily hiding the original image to see only procedural layers, or to restore visibility.",
+        description: "Show or hide the entire original point cloud.",
         inputSchema: z.object({
           visible: z
             .boolean()

@@ -1,10 +1,13 @@
 import { useAtom } from "jotai";
 import { Eye, EyeOff, Settings } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
-import { renderModeAtom } from "@/atoms/renderMode";
+import { type RenderMode, renderModeAtom } from "@/atoms/renderMode";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
-import { Switch } from "@/components/ui/switch";
+import {
+  NativeSelect,
+  NativeSelectOption,
+} from "@/components/ui/native-select";
 import {
   type AIProvider,
   type AISettings,
@@ -148,13 +151,16 @@ export function SettingsDialog() {
                 {renderMode === "ascii" ? "ASCII art" : "3D WebGL"}
               </span>
             </div>
-            <Switch
-              size="sm"
-              checked={renderMode === "webgl"}
-              onCheckedChange={(checked) =>
-                setRenderMode(checked ? "webgl" : "ascii")
+            <NativeSelect
+              value={renderMode}
+              onChange={(e) =>
+                setRenderMode(e.target.value as "ascii" | "webgl")
               }
-            />
+              className="w-auto text-[11px]"
+            >
+              <NativeSelectOption value="ascii">ASCII</NativeSelectOption>
+              <NativeSelectOption value="webgl">WebGL</NativeSelectOption>
+            </NativeSelect>
           </div>
         </div>
         <div className="h-px bg-foreground/[0.06]" />

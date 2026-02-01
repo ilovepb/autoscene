@@ -71,12 +71,14 @@ function MessageAttachments({
 }
 
 const TOOL_TITLE_MAP: Record<string, string> = {
-  "tool-remove_layer": "remove_layer",
-  "tool-clear_all_layers": "clear_all_layers",
-  "tool-delete_points_in_region": "delete_points_in_region",
-  "tool-delete_points_in_sphere": "delete_points_in_sphere",
-  "tool-toggle_original_cloud": "toggle_original_cloud",
-  "tool-image_to_3d": "image_to_3d",
+  "tool-load_skills": "Load skills",
+  "tool-generate_3d_points": "Generate 3D",
+  "tool-remove_layer": "Remove layer",
+  "tool-clear_all_layers": "Clear all layers",
+  "tool-delete_points_in_region": "Delete region",
+  "tool-delete_points_in_sphere": "Delete sphere",
+  "tool-toggle_original_cloud": "Toggle point cloud",
+  "tool-image_to_3d": "Image to 3D",
 };
 
 function ImageTo3dProgress() {
@@ -139,11 +141,32 @@ export function ChatMessages({ messages }: { messages: UIMessage[] }) {
                   </MessageResponse>
                 );
               }
+              if (part.type === "tool-load_skills") {
+                const skills =
+                  (part.input as Record<string, string[]>)?.skills ?? [];
+                return (
+                  <Tool key={`${msg.id}-tool-${i}`}>
+                    <ToolHeader
+                      title={TOOL_TITLE_MAP[part.type] ?? part.type}
+                      state={part.state}
+                      type={part.type}
+                    />
+                    <ToolContent>
+                      <div className="px-3 pb-3 text-xs text-muted-foreground">
+                        Loaded{" "}
+                        <span className="font-semibold">
+                          {skills.join(", ")}
+                        </span>
+                      </div>
+                    </ToolContent>
+                  </Tool>
+                );
+              }
               if (part.type === "tool-generate_3d_points") {
                 return (
                   <Tool key={`${msg.id}-tool-${i}`}>
                     <ToolHeader
-                      title="generate_3d_points"
+                      title={TOOL_TITLE_MAP[part.type] ?? part.type}
                       state={part.state}
                       type={part.type}
                     />
@@ -174,7 +197,7 @@ export function ChatMessages({ messages }: { messages: UIMessage[] }) {
                 return (
                   <Tool key={`${msg.id}-tool-${i}`} defaultOpen>
                     <ToolHeader
-                      title="image_to_3d"
+                      title={TOOL_TITLE_MAP[part.type] ?? part.type}
                       state={part.state}
                       type={part.type}
                     />

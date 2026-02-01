@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { buildDelaunayMesh } from "@/lib/delaunayMesh";
+import { buildGridMesh } from "@/lib/meshBuilder";
 import type { PointCloud } from "@/lib/pointcloud";
 
 export interface SceneHandle {
@@ -20,6 +22,8 @@ export interface SceneHandle {
     colors: Float32Array;
     sizes: Float32Array;
     count: number;
+    meshNormals?: Float32Array;
+    hasCustomNormals?: boolean;
   }) => void;
   /** Remove a procedural layer by id. */
   removeLayer: (id: string) => void;
@@ -79,6 +83,24 @@ export function createScene(
   const scene = new THREE.Scene();
 
   // -----------------------------------------------------------------------
+  // Lighting
+  // -----------------------------------------------------------------------
+  // Hemisphere light provides soft, even illumination from all directions —
+  // sky color from above, ground color from below. This prevents faces at
+  // steep angles from going fully dark (which makes geometric gaps in
+  // procedurally generated meshes much more visible).
+  const hemiLight = new THREE.HemisphereLight(0xffffff, 0x888888, 0.8);
+  scene.add(hemiLight);
+  // Key light from upper-right-front
+  const keyLight = new THREE.DirectionalLight(0xffffff, 0.8);
+  keyLight.position.set(1, 2, 3);
+  scene.add(keyLight);
+  // Fill light from lower-left-back at lower intensity to soften shadows
+  const fillLight = new THREE.DirectionalLight(0xffffff, 0.4);
+  fillLight.position.set(-1, -1, -2);
+  scene.add(fillLight);
+
+  // -----------------------------------------------------------------------
   // Camera
   // -----------------------------------------------------------------------
   // Three.js uses a right-handed coordinate system:
@@ -123,8 +145,35 @@ export function createScene(
     sizeAttenuation: true,
   });
 
-  const originalMesh = new THREE.Points(geometry, material);
-  scene.add(originalMesh);
+  const originalPoints = new THREE.Points(geometry, material);
+  scene.add(originalPoints);
+
+  // -----------------------------------------------------------------------
+  // Grid mesh (solid surface from depth cloud)
+  // -----------------------------------------------------------------------
+  let gridMeshObj: THREE.Mesh | null = null;
+  let gridMeshGeometry: THREE.BufferGeometry | null = null;
+  let gridMeshMaterial: THREE.MeshStandardMaterial | null = null;
+
+  if (pointCloud?.grid) {
+    gridMeshGeometry = buildGridMesh(pointCloud);
+    gridMeshGeometry.computeVertexNormals();
+    gridMeshMaterial = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      side: THREE.DoubleSide,
+      roughness: 0.7,
+      metalness: 0.0,
+    });
+    gridMeshObj = new THREE.Mesh(gridMeshGeometry, gridMeshMaterial);
+    scene.add(gridMeshObj);
+  }
+
+  // When a grid mesh exists, prefer it over the raw point cloud for the
+  // original depth data (the mesh looks better with lighting). Both are
+  // always added to the scene; we just hide the redundant representation.
+  if (gridMeshObj) {
+    originalPoints.visible = false;
+  }
 
   // We keep a hidden-point position so deleted points are moved off-screen
   // rather than removed from the buffer (avoids expensive array rebuilds).
@@ -193,7 +242,8 @@ export function createScene(
   }
 
   function setOriginalCloudVisible(visible: boolean): void {
-    originalMesh.visible = visible;
+    originalPoints.visible = visible;
+    if (gridMeshObj) gridMeshObj.visible = visible;
   }
 
   // -----------------------------------------------------------------------
@@ -269,9 +319,12 @@ export function createScene(
   const layers = new Map<
     string,
     {
-      mesh: THREE.Points;
+      points: THREE.Points;
       geometry: THREE.BufferGeometry;
       material: THREE.ShaderMaterial;
+      meshObj: THREE.Mesh | null;
+      meshGeometry: THREE.BufferGeometry | null;
+      meshMaterial: THREE.MeshStandardMaterial | null;
     }
   >();
 
@@ -289,7 +342,11 @@ export function createScene(
   const layerFragmentShader = `
     varying vec3 vColor;
     void main() {
-      gl_FragColor = vec4(vColor, 1.0);
+      vec2 coord = gl_PointCoord - vec2(0.5);
+      float r2 = dot(coord, coord);
+      if (r2 > 0.25) discard;
+      float shading = 1.0 - r2 * 2.0;
+      gl_FragColor = vec4(vColor * shading, 1.0);
     }
   `;
 
@@ -299,6 +356,11 @@ export function createScene(
     colors: Float32Array;
     sizes: Float32Array;
     count: number;
+    meshPositions?: Float32Array;
+    meshColors?: Float32Array;
+    meshVertexCount?: number;
+    meshNormals?: Float32Array;
+    hasCustomNormals?: boolean;
   }): void {
     removeLayer(layer.id);
 
@@ -313,17 +375,102 @@ export function createScene(
       vertexColors: true,
     });
 
-    const mesh = new THREE.Points(geo, mat);
-    scene.add(mesh);
-    layers.set(layer.id, { mesh, geometry: geo, material: mat });
+    const points = new THREE.Points(geo, mat);
+    scene.add(points);
+
+    // Build mesh for the layer — use explicit mesh data if available,
+    // otherwise fall back to Delaunay triangulation of point cloud
+    let meshObj: THREE.Mesh | null = null;
+    let meshGeometry: THREE.BufferGeometry | null = null;
+    let meshMaterial: THREE.MeshStandardMaterial | null = null;
+
+    const meshPositions = layer.meshPositions;
+    const meshColors = layer.meshColors;
+    const meshVertexCount = layer.meshVertexCount ?? 0;
+
+    if (meshPositions && meshColors && meshVertexCount > 0) {
+      // Explicit triangle mesh from emitTriangle/emitQuad or sdfMesh
+      meshGeometry = new THREE.BufferGeometry();
+      meshGeometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(meshPositions, 3),
+      );
+      meshGeometry.setAttribute(
+        "color",
+        new THREE.BufferAttribute(meshColors, 3),
+      );
+
+      // When the layer includes custom per-vertex normals (e.g., from SDF
+      // gradient computation in marching cubes), use them directly with smooth
+      // shading. This avoids the faceted look of flat shading and produces
+      // organic, curved surfaces. Otherwise fall back to auto-computed face
+      // normals with flat shading for hard-edged geometry like boxes.
+      if (layer.hasCustomNormals && layer.meshNormals) {
+        meshGeometry.setAttribute(
+          "normal",
+          new THREE.BufferAttribute(layer.meshNormals, 3),
+        );
+        meshMaterial = new THREE.MeshStandardMaterial({
+          vertexColors: true,
+          side: THREE.DoubleSide,
+          roughness: 0.55,
+          metalness: 0.0,
+          flatShading: false,
+        });
+      } else {
+        meshGeometry.computeVertexNormals();
+        meshMaterial = new THREE.MeshStandardMaterial({
+          vertexColors: true,
+          side: THREE.DoubleSide,
+          roughness: 0.55,
+          metalness: 0.0,
+          flatShading: true,
+        });
+      }
+      meshObj = new THREE.Mesh(meshGeometry, meshMaterial);
+      scene.add(meshObj);
+    } else {
+      // Fall back to Delaunay triangulation
+      const delaunayGeo = buildDelaunayMesh(
+        layer.positions,
+        layer.colors,
+        layer.count,
+      );
+      if (delaunayGeo) {
+        meshGeometry = delaunayGeo;
+        meshGeometry.computeVertexNormals();
+        meshMaterial = new THREE.MeshStandardMaterial({
+          vertexColors: true,
+          side: THREE.DoubleSide,
+          roughness: 0.7,
+          metalness: 0.0,
+        });
+        meshObj = new THREE.Mesh(meshGeometry, meshMaterial);
+        scene.add(meshObj);
+      }
+    }
+
+    layers.set(layer.id, {
+      points,
+      geometry: geo,
+      material: mat,
+      meshObj,
+      meshGeometry,
+      meshMaterial,
+    });
   }
 
   function removeLayer(id: string): void {
     const entry = layers.get(id);
     if (!entry) return;
-    scene.remove(entry.mesh);
+    scene.remove(entry.points);
     entry.geometry.dispose();
     entry.material.dispose();
+    if (entry.meshObj) {
+      scene.remove(entry.meshObj);
+      entry.meshGeometry?.dispose();
+      entry.meshMaterial?.dispose();
+    }
     layers.delete(id);
   }
 
@@ -353,6 +500,8 @@ export function createScene(
     clearLayers();
     geometry.dispose();
     material.dispose();
+    if (gridMeshGeometry) gridMeshGeometry.dispose();
+    if (gridMeshMaterial) gridMeshMaterial.dispose();
     renderer.dispose();
     controls.dispose();
   }

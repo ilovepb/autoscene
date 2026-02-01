@@ -41,9 +41,11 @@ Key enforced rules:
 ### `src/lib/` — Core logic
 - `depth.ts` — Loads `depth-anything-v2-small` ONNX model via `@huggingface/transformers`, runs monocular depth estimation
 - `pointcloud.ts` — Backprojects depth map to 3D positions using pinhole camera model (~60° FOV)
-- `scene.ts` — Three.js scene setup with OrbitControls; exports `SceneHandle` interface for imperative control; `dispose()` cleans up all GPU resources
+- `scene.ts` — Three.js scene setup with OrbitControls; exports `SceneHandle` interface for imperative control; supports points, mesh, and ASCII render modes; `dispose()` cleans up all GPU resources
+- `meshBuilder.ts` — Builds triangle mesh from grid-structured depth clouds with depth discontinuity filtering
+- `delaunayMesh.ts` — Delaunay triangulation for unstructured procedural point clouds
 - `ascii.ts` — Reads WebGL framebuffer at 160x90, maps luminance to ASCII character ramp
-- `procedural/engine.ts` — Executes user-generated JS in a Web Worker sandbox with 5s timeout; supports `emit()`, `noise2D()`, `noise3D()`, seeded `random()`; max 100k points per layer
+- `procedural/engine.ts` — Executes user-generated JS in a Web Worker sandbox with 30s timeout; supports `emit()`, `emitTriangle()`, `emitQuad()`, noise functions, seeded `random()`; no hard limits on points or mesh vertices (buffers grow dynamically). Includes shape primitives: `box(cx,cy,cz, sx,sy,sz, r,g,b)`, `extrudePath(profile, path, closed, r,g,b)`, `grid(x0,z0, x1,z1, resX,resZ, heightFn, colorFn)`. Also includes SDF-based organic shape system: SDF primitives (`sdSphere`, `sdBox`, `sdCapsule`, `sdTorus`, `sdCone`, `sdPlane`, `sdCylinder`), SDF operators (`opUnion`, `opSubtract`, `opIntersect`, `opSmoothUnion`, `opSmoothSubtract`, `opSmoothIntersect`, `opRound`, `opDisplace`), `sdfMesh(sdfFn, colorFn, bMin, bMax, resolution)` for marching cubes iso-surface extraction with smooth normals from SDF gradients, and `lathe(cx,cy,cz, profile, segments, r,g,b)` for surface-of-revolution shapes
 
 ### `src/components/` — UI
 - `App.tsx` — Root component with state machine, wraps everything in `JotaiProvider` + `ThemeProvider`
@@ -58,12 +60,14 @@ Key enforced rules:
 
 ### `src/atoms/` — Jotai atoms
 - `fps.ts` — FPS counter atom, updated every 500ms from animation loop
+- `renderMode.ts` — Render mode atom (`"ascii" | "points" | "mesh"`), persisted to localStorage `autoscene-render-mode`
 
 ### `src/providers/`
 - `ThemeProvider.tsx` — React context for theme (`dark`/`light`/`system`); persists to localStorage key `autoscene-theme`
 
 ### `src/server/` — Server-side (Vite SSR-loaded)
-- `chat.ts` — AI chat handler: Cerebras `llama-4-scout-17b-16e-instruct` via AI SDK `streamText`; single tool `generate_3d_points` with Zod schema
+- `chat.ts` — AI chat handler via AI SDK `streamText`; tools include `load_skills` (server-executed, returns skill references), `generate_3d_points`, `image_to_3d`, layer management, and point deletion
+- `skills.ts` — 6 comprehensive knowledge-domain skills (`advanced-sdf`, `natural-world`, `materials-and-color`, `objects-and-characters`, `math-and-patterns`, `atmosphere-and-fx`) loaded by the LLM via `load_skills` tool before generating code
 
 ## Environment Variables
 
@@ -95,14 +99,15 @@ Key enforced rules:
 - **Error handling:** Always `err instanceof Error ? err.message : "fallback"` pattern
 - **Three.js cleanup:** All scenes use `SceneHandle.dispose()` which cleans up geometry, materials, renderer, controls, and layers
 - **Stable callbacks:** Ref-forwarding pattern to avoid effect re-runs: store callback in ref, wrap in empty-deps `useCallback`
-- **shadcn components:** Use CVA (`class-variance-authority`) for variants; `data-slot` attributes for styling hooks; `@base-ui/react` primitives underneath
+- **shadcn components:** Use CVA (`class-variance-authority`) for variants; `data-slot` attributes for styling hooks; `@base-ui/react` primitives underneath. **Always use existing shadcn/ui primitives** (Button, Tabs, Switch, Select, etc.) for UI controls — never use raw HTML `<button>` or `<select>` elements for settings/controls.
+- **Graphics code comments** — All geometry generation, shader code, and rendering pipeline code must include inline comments explaining the math and algorithm steps. Graphics code is inherently hard to read; comments are mandatory, not optional.
 
 ## Gotchas
 
 - **Relative imports fail lint** — Biome rejects `./` and `../` imports. Always use `@/`.
 - **`/api/chat` is Vite middleware** — defined as a Vite plugin in `vite.config.ts`, not a standalone server. It SSR-loads `@/server/chat` via `server.ssrLoadModule()`.
 - **Hidden WebGL canvas** — the Three.js renderer canvas is appended to `document.body` with `display:none`; pixel data is read via `gl.readPixels()` each frame and converted to ASCII.
-- **Procedural code runs in Worker** — 5-second timeout, max 100k points, seeded PRNG (Mulberry32). Worker is created from a blob URL and terminated after each execution.
+- **Procedural code runs in Worker** — 30-second timeout, no point/vertex limits (buffers grow dynamically), seeded PRNG (Mulberry32). Worker is created from a blob URL and terminated after each execution.
 - **Two shadcn registries** — `@shadcn` (default) and `@ai-elements` (AI SDK components). Both in `components.json`.
 - **`verbatimModuleSyntax`** — use `import type` for type-only imports; bare type imports cause build errors.
 - **Theme localStorage key** is `autoscene-theme`, API key is `autoscene-api-key`.

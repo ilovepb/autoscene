@@ -4,6 +4,8 @@ export interface PointCloud {
   positions: Float32Array;
   colors: Float32Array;
   count: number;
+  /** Grid dimensions when built from a depth map (enables mesh reconstruction). */
+  grid?: { cols: number; rows: number };
 }
 
 // -----------------------------------------------------------------------
@@ -154,10 +156,14 @@ export function buildPointCloud(
     }
   }
 
+  const cols = Math.ceil(imgW / step);
+  const rows = Math.ceil(imgH / step);
+
   // Return only the portion of the buffers we actually filled.
   return {
     positions: positions.subarray(0, pointIndex * 3),
     colors: colors.subarray(0, pointIndex * 3),
     count: pointIndex,
+    grid: { cols, rows },
   };
 }
