@@ -25,3 +25,5 @@ dist-ssr
 
 # MCP config
 .mcp.json
+.vercel
+.env*.local

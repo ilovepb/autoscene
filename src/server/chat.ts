@@ -140,9 +140,15 @@ export async function handleChatRequest(req: Request): Promise<Response> {
     await req.json();
 
   const provider = req.headers.get("x-provider") ?? "cerebras";
-  const apiKey =
-    req.headers.get("x-api-key") ?? process.env.CEREBRAS_API_KEY ?? "";
+  const apiKey = req.headers.get("x-api-key") ?? "";
   const modelId = req.headers.get("x-model") ?? "llama-3.3-70b";
+
+  if (!apiKey) {
+    return new Response(
+      JSON.stringify({ error: "API key required. Set your key in Settings." }),
+      { status: 401, headers: { "Content-Type": "application/json" } },
+    );
+  }
 
   const model = createModel(provider, apiKey, modelId);
 

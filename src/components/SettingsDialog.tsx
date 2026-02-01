@@ -1,7 +1,7 @@
 import { useAtom } from "jotai";
 import { Eye, EyeOff, Settings } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
-import { type RenderMode, renderModeAtom } from "@/atoms/renderMode";
+import { renderModeAtom } from "@/atoms/renderMode";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
 import {

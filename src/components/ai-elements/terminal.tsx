@@ -11,9 +11,9 @@ import {
   useRef,
   useState,
 } from "react";
+import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Shimmer } from "./shimmer";
 
 interface TerminalContextType {
   output: string;
@@ -125,7 +125,7 @@ export const TerminalStatus = ({
       className={cn("flex items-center gap-2 text-xs text-zinc-400", className)}
       {...props}
     >
-      {children ?? <Shimmer className="w-16" />}
+      {children ?? <Shimmer className="w-16">{""}</Shimmer>}
     </div>
   );
 };
