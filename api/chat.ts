@@ -137,7 +137,12 @@ function formatLayersContext(activeLayers: unknown): string {
 
 export async function handleChatRequest(req: Request): Promise<Response> {
   const { messages, sceneBounds, activeLayers, availableImages } =
-    await req.json();
+    (await req.json()) as {
+      messages: UIMessage[];
+      sceneBounds: { pointCount: number };
+      activeLayers: unknown;
+      availableImages: unknown;
+    };
 
   const provider = req.headers.get("x-provider") ?? "cerebras";
   const apiKey = req.headers.get("x-api-key") ?? "";
