@@ -5,7 +5,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
 import { convertToModelMessages, streamText, tool, type UIMessage } from "ai";
 import { z } from "zod";
-import { SKILLS } from "./_skills";
+import { SKILLS } from "./_skills.ts";
 
 const SYSTEM_PROMPT = `You are a 3D scene architect. You create and modify 3D scenes using a procedural sandbox API. Output is rendered as ASCII art, point clouds, or WebGL mesh.
 

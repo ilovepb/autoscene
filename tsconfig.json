@@ -6,15 +6,14 @@
     },
     {
       "path": "./tsconfig.node.json"
-    },
-    {
-      "path": "./tsconfig.api.json"
     }
   ],
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": [
+        "./src/*"
+      ]
     }
   }
 }
