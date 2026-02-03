@@ -114,6 +114,10 @@ export const BUILTIN_MODELS: Record<AIProvider, ModelOption[]> = {
   ],
 };
 
+export type KeysFormValues = {
+  providers: Record<AIProvider, { apiKey: string }>;
+};
+
 const STORAGE_KEY = "autoscene-settings";
 
 const DEFAULT_PROVIDER_CONFIG: ProviderConfig = { apiKey: "" };

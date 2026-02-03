@@ -1,4 +1,5 @@
 import { CheckIcon } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useRef, useState } from "react";
 import {
   Conversation,
@@ -27,6 +28,7 @@ import {
   PromptInputTools,
 } from "@/components/ai-elements/prompt-input";
 import { ChatMessages } from "@/components/ChatMessageParts";
+import { OnboardingCard } from "@/components/OnboardingCard";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import type { ChatManager } from "@/hooks/useChatManager";
 
@@ -44,6 +46,7 @@ const PROVIDER_SLUG: Record<string, string> = {
 
 export function CenteredChat({ chat, onFirstMessage }: Props) {
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
+  const [, setSettingsVersion] = useState(0);
   const hasSentRef = useRef(false);
 
   const handleSubmit = useCallback(
@@ -181,17 +184,32 @@ export function CenteredChat({ chat, onFirstMessage }: Props) {
         </>
       ) : (
         <div className="flex-1 flex items-center justify-center">
-          <div className="w-full max-w-2xl px-3">
-            <div className="text-center mb-6">
-              <h1 className="text-lg font-medium tracking-tight text-foreground/80">
-                autoscene
-              </h1>
-              <p className="text-xs text-muted-foreground mt-1">
-                Describe a 3D scene to generate
-              </p>
-            </div>
-            {promptInputJSX}
-          </div>
+          <AnimatePresence mode="wait">
+            {configuredProviders.size === 0 ? (
+              <OnboardingCard
+                key="onboarding"
+                onComplete={() => setSettingsVersion((v) => v + 1)}
+              />
+            ) : (
+              <motion.div
+                key="chat"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.25 }}
+                className="w-full max-w-2xl px-3"
+              >
+                <div className="text-center mb-6">
+                  <h1 className="text-lg font-medium tracking-tight text-foreground/80">
+                    autoscene
+                  </h1>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Describe a 3D scene to generate
+                  </p>
+                </div>
+                {promptInputJSX}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       )}
     </div>
