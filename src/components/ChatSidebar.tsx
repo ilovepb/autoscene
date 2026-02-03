@@ -64,7 +64,7 @@ export function ChatSidebar({ chat, open }: Props) {
       <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
         <MessageSquare className="size-4 text-muted-foreground shrink-0" />
         <span className="text-xs font-medium tracking-wide text-muted-foreground">
-          Scene agent
+          scene agent
         </span>
       </div>
 
@@ -73,8 +73,8 @@ export function ChatSidebar({ chat, open }: Props) {
         <ConversationContent className="gap-4 p-3">
           {chat.messages.length === 0 && (
             <ConversationEmptyState
-              title="Scene agent"
-              description="Describe what to add to your 3D scene"
+              title="scene agent"
+              description="describe what to add to your 3d scene"
             />
           )}
           <ChatMessages messages={chat.messages} />
@@ -90,7 +90,7 @@ export function ChatSidebar({ chat, open }: Props) {
           }}
         >
           <PromptInputBody>
-            <PromptInputTextarea placeholder="Add a sphere, terrain, trees..." />
+            <PromptInputTextarea placeholder="add a sphere, terrain, trees..." />
           </PromptInputBody>
           <PromptInputFooter>
             <PromptInputTools>
@@ -110,14 +110,14 @@ export function ChatSidebar({ chat, open }: Props) {
                         </ModelSelectorName>
                       </>
                     ) : (
-                      <ModelSelectorName>Select model</ModelSelectorName>
+                      <ModelSelectorName>select model</ModelSelectorName>
                     )}
                   </PromptInputButton>
                 </ModelSelectorTrigger>
                 <ModelSelectorContent>
-                  <ModelSelectorInput placeholder="Search models..." />
+                  <ModelSelectorInput placeholder="search models..." />
                   <ModelSelectorList>
-                    <ModelSelectorEmpty>No models found.</ModelSelectorEmpty>
+                    <ModelSelectorEmpty>no models found.</ModelSelectorEmpty>
                     {chat.ALL_PROVIDERS.map((provider) => {
                       const isConfigured = configuredProviders.has(provider);
                       const providerModels = chat.BUILTIN_MODELS[provider];
@@ -154,7 +154,7 @@ export function ChatSidebar({ chat, open }: Props) {
                             })
                           ) : (
                             <div className="px-3 py-2 text-xs text-muted-foreground">
-                              Add API key in settings to use{" "}
+                              add API key in settings to use{" "}
                               {chat.PROVIDER_META[provider].label} models
                             </div>
                           )}

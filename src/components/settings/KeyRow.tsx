@@ -59,7 +59,7 @@ export function KeyRow({
               type="button"
               onClick={() => setRevealed((v) => !v)}
               className="shrink-0 size-7 inline-flex items-center justify-center text-foreground/20 hover:text-foreground/50 transition-colors"
-              aria-label={revealed ? "Hide key" : "Show key"}
+              aria-label={revealed ? "hide key" : "show key"}
             >
               {revealed ? (
                 <EyeOff className="size-3" />

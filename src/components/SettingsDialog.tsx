@@ -28,7 +28,7 @@ export function SettingsDialog() {
           variant="ghost"
           size="icon-sm"
           className="text-foreground/40 hover:text-foreground/80 hover:bg-foreground/5 backdrop-blur-sm"
-          aria-label="Settings"
+          aria-label="settings"
         >
           <Settings className="size-3.5" />
         </Button>

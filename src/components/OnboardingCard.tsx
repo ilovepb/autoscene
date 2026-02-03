@@ -58,7 +58,7 @@ export function OnboardingCard({ onComplete }: OnboardingCardProps) {
           autoscene
         </h1>
         <p className="text-xs text-muted-foreground mt-1">
-          Add an API key to get started
+          add an API key to get started
         </p>
       </div>
 

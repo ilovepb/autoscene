@@ -231,7 +231,7 @@ export async function handleChatRequest(req: Request): Promise<Response> {
 
   if (!apiKey) {
     return new Response(
-      JSON.stringify({ error: "API key required. Set your key in Settings." }),
+      JSON.stringify({ error: "API key required. set your key in settings." }),
       { status: 401, headers: { "Content-Type": "application/json" } },
     );
   }

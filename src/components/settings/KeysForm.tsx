@@ -29,7 +29,7 @@ export function KeysForm({
       <div className="px-4 pt-4 pb-3">
         <div className="flex items-center justify-between">
           <div className="text-[10px] tracking-[0.1em] text-foreground/30">
-            API keys
+            api keys
           </div>
           <div className="text-[9px] tabular-nums text-foreground/20">
             {configuredCount}/{ALL_PROVIDERS.length} configured
@@ -58,7 +58,7 @@ export function KeysForm({
       <div className="h-px bg-foreground/[0.06]" />
       <div className="flex items-center justify-between px-4 py-3">
         <span className="text-[9px] text-foreground/15">
-          Keys never leave your browser
+          keys never leave your browser
         </span>
         <Button
           type="submit"
@@ -66,7 +66,7 @@ export function KeysForm({
           variant="outline"
           disabled={saveDisabled}
         >
-          <span className="text-[10px]">Save</span>
+          <span className="text-[10px]">save</span>
         </Button>
       </div>
     </form>

@@ -29,7 +29,7 @@ function formatLayerOutput(layer: GeneratedLayer, meta: LayerMeta): string {
   const triangles = Math.floor(layer.meshVertexCount / 3);
   const b = meta.bounds;
   const fmt = (n: number) => n.toFixed(2);
-  return `Generated ${triangles} triangles (layer: ${layer.id}, bounds: min=[${b.min.map(fmt)}] max=[${b.max.map(fmt)}] center=[${b.center.map(fmt)}])`;
+  return `generated ${triangles} triangles (layer: ${layer.id}, bounds: min=[${b.min.map(fmt)}] max=[${b.max.map(fmt)}] center=[${b.center.map(fmt)}])`;
 }
 
 export interface ChatManagerOptions {
@@ -105,7 +105,7 @@ export function useChatManager(
           const meshVal = validateMeshOutput(layer);
           let output = formatLayerOutput(layer, meta);
           if (meshVal.warnings.length > 0) {
-            output += `\n\nWarnings:\n${meshVal.warnings.map((w) => `- ${w}`).join("\n")}`;
+            output += `\n\nwarnings:\n${meshVal.warnings.map((w) => `- ${w}`).join("\n")}`;
           }
           addToolOutput({
             tool: "generate_3d_points",
@@ -117,7 +117,7 @@ export function useChatManager(
             tool: "generate_3d_points",
             toolCallId: toolCall.toolCallId,
             state: "output-error",
-            errorText: err instanceof Error ? err.message : "Execution failed",
+            errorText: err instanceof Error ? err.message : "execution failed",
           });
         }
       } else if (toolCall.toolName === "remove_layer") {
@@ -132,14 +132,14 @@ export function useChatManager(
             addToolOutput({
               tool: "remove_layer",
               toolCallId: toolCall.toolCallId,
-              output: `Removed layer: ${input.layerId}`,
+              output: `removed layer: ${input.layerId}`,
             });
           } else {
             addToolOutput({
               tool: "remove_layer",
               toolCallId: toolCall.toolCallId,
               state: "output-error",
-              errorText: `Layer "${input.layerId}" not found. Active layers: ${handle.getLayerIds().join(", ") || "none"}`,
+              errorText: `layer "${input.layerId}" not found. active layers: ${handle.getLayerIds().join(", ") || "none"}`,
             });
           }
         }
@@ -153,7 +153,7 @@ export function useChatManager(
           addToolOutput({
             tool: "clear_all_layers",
             toolCallId: toolCall.toolCallId,
-            output: `Cleared ${count} layer(s) from the scene`,
+            output: `cleared ${count} layer(s) from the scene`,
           });
         }
       }

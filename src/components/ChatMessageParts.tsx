@@ -13,10 +13,10 @@ import {
 import { Tool, ToolContent, ToolHeader } from "@/components/ai-elements/tool";
 
 const TOOL_TITLE_MAP: Record<string, string> = {
-  "tool-load_skills": "Load skills",
-  "tool-generate_3d_points": "Generate 3D",
-  "tool-remove_layer": "Remove layer",
-  "tool-clear_all_layers": "Clear all layers",
+  "tool-load_skills": "load skills",
+  "tool-generate_3d_points": "generate 3d",
+  "tool-remove_layer": "remove layer",
+  "tool-clear_all_layers": "clear all layers",
 };
 
 export function ChatMessages({ messages }: { messages: UIMessage[] }) {
@@ -56,7 +56,7 @@ export function ChatMessages({ messages }: { messages: UIMessage[] }) {
                     />
                     <ToolContent>
                       <div className="px-3 pb-3 text-xs text-muted-foreground">
-                        Loaded{" "}
+                        loaded{" "}
                         <span className="font-semibold">
                           {skills.join(", ")}
                         </span>

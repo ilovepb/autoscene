@@ -80,7 +80,7 @@ export function CenteredChat({ chat, onFirstMessage }: Props) {
       }}
     >
       <PromptInputBody>
-        <PromptInputTextarea placeholder="Describe a 3D scene..." />
+        <PromptInputTextarea placeholder="describe a 3d scene..." />
       </PromptInputBody>
       <PromptInputFooter>
         <PromptInputTools>
@@ -100,14 +100,14 @@ export function CenteredChat({ chat, onFirstMessage }: Props) {
                     </ModelSelectorName>
                   </>
                 ) : (
-                  <ModelSelectorName>Select model</ModelSelectorName>
+                  <ModelSelectorName>select model</ModelSelectorName>
                 )}
               </PromptInputButton>
             </ModelSelectorTrigger>
             <ModelSelectorContent>
-              <ModelSelectorInput placeholder="Search models..." />
+              <ModelSelectorInput placeholder="search models..." />
               <ModelSelectorList>
-                <ModelSelectorEmpty>No models found.</ModelSelectorEmpty>
+                <ModelSelectorEmpty>no models found.</ModelSelectorEmpty>
                 {chat.ALL_PROVIDERS.map((provider) => {
                   const isConfigured = configuredProviders.has(provider);
                   const providerModels = chat.BUILTIN_MODELS[provider];
@@ -142,7 +142,7 @@ export function CenteredChat({ chat, onFirstMessage }: Props) {
                         })
                       ) : (
                         <div className="px-3 py-2 text-xs text-muted-foreground">
-                          Add API key in settings to use{" "}
+                          add API key in settings to use{" "}
                           {chat.PROVIDER_META[provider].label} models
                         </div>
                       )}
@@ -163,7 +163,7 @@ export function CenteredChat({ chat, onFirstMessage }: Props) {
       {/* Header */}
       <header className="flex items-center justify-between px-4 py-3 shrink-0">
         <span className="text-xs tracking-[0.1em] text-muted-foreground">
-          Autoscene
+          autoscene
         </span>
         <div className="flex items-center gap-1.5">
           <SettingsDialog />
@@ -203,7 +203,7 @@ export function CenteredChat({ chat, onFirstMessage }: Props) {
                     autoscene
                   </h1>
                   <p className="text-xs text-muted-foreground mt-1">
-                    Describe a 3D scene to generate
+                    describe a 3d scene to generate
                   </p>
                 </div>
                 {promptInputJSX}
