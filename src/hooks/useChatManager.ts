@@ -3,12 +3,7 @@ import {
   DefaultChatTransport,
   lastAssistantMessageIsCompleteWithToolCalls,
 } from "ai";
-import { useSetAtom } from "jotai";
 import { useCallback, useMemo, useRef, useState } from "react";
-import { imageTo3dProgressAtom } from "@/atoms/imageTo3dProgress";
-import { estimateDepth, loadDepthModel } from "@/lib/depth";
-import { getAllImages, getImage, storeImage } from "@/lib/imageStore";
-import { buildPointCloud } from "@/lib/pointcloud";
 import {
   computeLayerBounds,
   executeProceduralCode,
@@ -16,6 +11,7 @@ import {
   type LayerMeta,
   type SceneBounds,
 } from "@/lib/procedural/engine";
+import { validateMeshOutput } from "@/lib/sandbox/outputValidation";
 import type { SceneHandle } from "@/lib/scene";
 import {
   type AIProvider,
@@ -30,13 +26,10 @@ import {
 } from "@/lib/settings";
 
 function formatLayerOutput(layer: GeneratedLayer, meta: LayerMeta): string {
-  const parts: string[] = [];
-  if (layer.count > 0) parts.push(`${layer.count} points`);
-  if (layer.meshVertexCount && layer.meshVertexCount > 0)
-    parts.push(`${Math.floor(layer.meshVertexCount / 3)} triangles`);
+  const triangles = Math.floor(layer.meshVertexCount / 3);
   const b = meta.bounds;
   const fmt = (n: number) => n.toFixed(2);
-  return `Generated ${parts.join(" + ")} (layer: ${layer.id}, bounds: min=[${b.min.map(fmt)}] max=[${b.max.map(fmt)}] center=[${b.center.map(fmt)}])`;
+  return `Generated ${triangles} triangles (layer: ${layer.id}, bounds: min=[${b.min.map(fmt)}] max=[${b.max.map(fmt)}] center=[${b.center.map(fmt)}])`;
 }
 
 export interface ChatManagerOptions {
@@ -56,7 +49,6 @@ export function useChatManager(
   const activeLayersRef = useRef<Map<string, GeneratedLayer>>(new Map());
   /** Per-layer spatial metadata sent to the LLM for positioning awareness. */
   const layerMetaRef = useRef<Map<string, LayerMeta>>(new Map());
-  const setImageTo3dProgress = useSetAtom(imageTo3dProgressAtom);
 
   const [selectedModel, setSelectedModel] = useState(
     () => loadSettings().selectedModel,
@@ -73,20 +65,13 @@ export function useChatManager(
     () =>
       new DefaultChatTransport({
         api: "/api/chat",
-        body: () => {
-          const images = getAllImages().map((e) => ({
-            id: e.id,
-            filename: e.filename,
-          }));
-          return {
-            sceneBounds: boundsRef.current,
-            activeLayers: Array.from(layerMetaRef.current.values()),
-            availableImages: images,
-          };
-        },
+        body: () => ({
+          sceneBounds: boundsRef.current,
+          activeLayers: Array.from(layerMetaRef.current.values()),
+        }),
         headers: () => buildRequestHeaders(loadSettings()),
       }),
-    [sceneHandleRef, boundsRef],
+    [boundsRef],
   );
 
   const { messages, sendMessage, addToolOutput, status } = useChat({
@@ -116,10 +101,16 @@ export function useChatManager(
             pendingLayersRef.current.push(layer);
             optionsRef.current.onTransitionToViewing();
           }
+          // Check for mesh quality warnings and include them in tool output
+          const meshVal = validateMeshOutput(layer);
+          let output = formatLayerOutput(layer, meta);
+          if (meshVal.warnings.length > 0) {
+            output += `\n\nWarnings:\n${meshVal.warnings.map((w) => `- ${w}`).join("\n")}`;
+          }
           addToolOutput({
             tool: "generate_3d_points",
             toolCallId: toolCall.toolCallId,
-            output: formatLayerOutput(layer, meta),
+            output,
           });
         } catch (err) {
           addToolOutput({
@@ -128,71 +119,6 @@ export function useChatManager(
             state: "output-error",
             errorText: err instanceof Error ? err.message : "Execution failed",
           });
-        }
-      } else if (toolCall.toolName === "image_to_3d") {
-        const input = toolCall.input as { imageId: string };
-        const entry = getImage(input.imageId);
-        if (!entry) {
-          addToolOutput({
-            tool: "image_to_3d",
-            toolCallId: toolCall.toolCallId,
-            state: "output-error",
-            errorText: `Image "${input.imageId}" not found. Available images: ${
-              getAllImages()
-                .map((e) => `${e.filename} (${e.id})`)
-                .join(", ") || "none"
-            }`,
-          });
-          return;
-        }
-        try {
-          setImageTo3dProgress({ status: "loading-model", progress: 0 });
-          await loadDepthModel((p) => {
-            setImageTo3dProgress({ status: "loading-model", progress: p });
-          });
-
-          setImageTo3dProgress({ status: "estimating-depth" });
-          const depth = await estimateDepth(entry.image);
-
-          setImageTo3dProgress({ status: "building-cloud" });
-          const pointCloud = buildPointCloud(depth, entry.imageData, 2);
-          const defaultSizes = new Float32Array(pointCloud.count);
-          defaultSizes.fill(0.035);
-          const layer: GeneratedLayer = {
-            id: `img-${entry.id.slice(0, 8)}`,
-            positions: pointCloud.positions,
-            colors: pointCloud.colors,
-            sizes: defaultSizes,
-            count: pointCloud.count,
-          };
-          activeLayersRef.current.set(layer.id, layer);
-          const meta: LayerMeta = {
-            ...computeLayerBounds(layer),
-            description: `image: ${entry.filename}`,
-          };
-          layerMetaRef.current.set(layer.id, meta);
-          const handle = sceneHandleRef.current;
-          if (handle) {
-            handle.addLayer(layer);
-          } else {
-            pendingLayersRef.current.push(layer);
-            optionsRef.current.onTransitionToViewing();
-          }
-          addToolOutput({
-            tool: "image_to_3d",
-            toolCallId: toolCall.toolCallId,
-            output: formatLayerOutput(layer, meta),
-          });
-        } catch (err) {
-          addToolOutput({
-            tool: "image_to_3d",
-            toolCallId: toolCall.toolCallId,
-            state: "output-error",
-            errorText:
-              err instanceof Error ? err.message : "Depth estimation failed",
-          });
-        } finally {
-          setImageTo3dProgress({ status: "idle" });
         }
       } else if (toolCall.toolName === "remove_layer") {
         const input = toolCall.input as { layerId: string };
@@ -230,87 +156,14 @@ export function useChatManager(
             output: `Cleared ${count} layer(s) from the scene`,
           });
         }
-      } else if (toolCall.toolName === "delete_points_in_region") {
-        const input = toolCall.input as {
-          minX: number;
-          maxX: number;
-          minY: number;
-          maxY: number;
-          minZ: number;
-          maxZ: number;
-        };
-        const handle = sceneHandleRef.current;
-        if (handle) {
-          const deleted = handle.deletePointsInRegion(input);
-          addToolOutput({
-            tool: "delete_points_in_region",
-            toolCallId: toolCall.toolCallId,
-            output: `Deleted ${deleted} points from the original point cloud`,
-          });
-        }
-      } else if (toolCall.toolName === "delete_points_in_sphere") {
-        const input = toolCall.input as {
-          x: number;
-          y: number;
-          z: number;
-          radius: number;
-        };
-        const handle = sceneHandleRef.current;
-        if (handle) {
-          const deleted = handle.deletePointsInSphere(
-            { x: input.x, y: input.y, z: input.z },
-            input.radius,
-          );
-          addToolOutput({
-            tool: "delete_points_in_sphere",
-            toolCallId: toolCall.toolCallId,
-            output: `Deleted ${deleted} points from the original point cloud`,
-          });
-        }
-      } else if (toolCall.toolName === "toggle_original_cloud") {
-        const input = toolCall.input as { visible: boolean };
-        const handle = sceneHandleRef.current;
-        if (handle) {
-          handle.setOriginalCloudVisible(input.visible);
-          addToolOutput({
-            tool: "toggle_original_cloud",
-            toolCallId: toolCall.toolCallId,
-            output: `Original point cloud is now ${input.visible ? "visible" : "hidden"}`,
-          });
-        }
       }
     },
   });
 
   const handleSubmit = useCallback(
-    async ({
-      text,
-      files,
-    }: {
-      text: string;
-      files?: { url: string; mediaType: string; filename?: string }[];
-    }) => {
-      if (!text.trim() && (!files || files.length === 0)) return;
-
-      let augmentedText = text;
-
-      if (files && files.length > 0) {
-        for (const file of files) {
-          try {
-            const response = await fetch(file.url);
-            const blob = await response.blob();
-            const fileObj = new File([blob], file.filename ?? "image", {
-              type: file.mediaType,
-            });
-            const imageId = await storeImage(fileObj);
-            augmentedText += `\n[Image uploaded: "${file.filename ?? "image"}" (id: ${imageId})]`;
-          } catch {
-            augmentedText += `\n[Failed to process attachment: "${file.filename ?? "image"}"]`;
-          }
-        }
-      }
-
-      sendMessage({ text: augmentedText });
+    async ({ text }: { text: string }) => {
+      if (!text.trim()) return;
+      sendMessage({ text });
     },
     [sendMessage],
   );

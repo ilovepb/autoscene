@@ -19,20 +19,14 @@ import {
 } from "@/components/ai-elements/model-selector";
 import {
   PromptInput,
-  PromptInputActionAddAttachments,
-  PromptInputActionMenu,
-  PromptInputActionMenuContent,
-  PromptInputActionMenuTrigger,
   PromptInputBody,
   PromptInputButton,
   PromptInputFooter,
-  PromptInputHeader,
   PromptInputSubmit,
   PromptInputTextarea,
   PromptInputTools,
 } from "@/components/ai-elements/prompt-input";
 import { ChatMessages } from "@/components/ChatMessageParts";
-import { PromptInputAttachmentsDisplay } from "@/components/PromptInputAttachmentsDisplay";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import type { ChatManager } from "@/hooks/useChatManager";
 
@@ -53,18 +47,12 @@ export function CenteredChat({ chat, onFirstMessage }: Props) {
   const hasSentRef = useRef(false);
 
   const handleSubmit = useCallback(
-    ({
-      text,
-      files,
-    }: {
-      text: string;
-      files?: { url: string; mediaType: string; filename?: string }[];
-    }) => {
+    ({ text }: { text: string }) => {
       if (!hasSentRef.current) {
         hasSentRef.current = true;
         onFirstMessage();
       }
-      chat.sendMessage({ text, files });
+      chat.sendMessage({ text });
     },
     [chat, onFirstMessage],
   );
@@ -84,26 +72,15 @@ export function CenteredChat({ chat, onFirstMessage }: Props) {
 
   const promptInputJSX = (
     <PromptInput
-      multiple
-      globalDrop
-      onSubmit={({ text, files }) => {
-        handleSubmit({ text, files });
+      onSubmit={({ text }) => {
+        handleSubmit({ text });
       }}
     >
-      <PromptInputHeader>
-        <PromptInputAttachmentsDisplay />
-      </PromptInputHeader>
       <PromptInputBody>
-        <PromptInputTextarea placeholder="Describe a scene, or upload an image..." />
+        <PromptInputTextarea placeholder="Describe a 3D scene..." />
       </PromptInputBody>
       <PromptInputFooter>
         <PromptInputTools>
-          <PromptInputActionMenu>
-            <PromptInputActionMenuTrigger />
-            <PromptInputActionMenuContent>
-              <PromptInputActionAddAttachments />
-            </PromptInputActionMenuContent>
-          </PromptInputActionMenu>
           <ModelSelector
             onOpenChange={setModelSelectorOpen}
             open={modelSelectorOpen}
@@ -210,7 +187,7 @@ export function CenteredChat({ chat, onFirstMessage }: Props) {
                 autoscene
               </h1>
               <p className="text-xs text-muted-foreground mt-1">
-                Describe a 3D scene or upload an image
+                Describe a 3D scene to generate
               </p>
             </div>
             {promptInputJSX}

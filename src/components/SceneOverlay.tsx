@@ -1,23 +1,23 @@
 import { useAtomValue } from "jotai";
 import {
   ArrowUp,
-  ImageUp,
+  Download,
   Keyboard,
   Mouse,
   PanelRightClose,
   PanelRightOpen,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { fpsAtom } from "@/atoms/fps";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 interface Props {
-  onNewImage: (file: File) => void;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
+  onExportGLB?: () => void;
 }
 
 function Kbd({ children }: { children: React.ReactNode }) {
@@ -60,21 +60,11 @@ function FpsCounter() {
 }
 
 export function SceneOverlay({
-  onNewImage,
   sidebarOpen,
   onToggleSidebar,
+  onExportGLB,
 }: Props) {
   const [showControls, setShowControls] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  const handleFile = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (file) onNewImage(file);
-      e.target.value = "";
-    },
-    [onNewImage],
-  );
 
   // Auto-dismiss controls panel after 8 seconds
   useEffect(() => {
@@ -85,14 +75,6 @@ export function SceneOverlay({
 
   return (
     <>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*"
-        className="hidden"
-        onChange={handleFile}
-      />
-
       {/* ── Top bar: title + actions ─────────────────────────────── */}
       <div className="absolute top-0 left-0 right-0 z-20 flex items-center justify-between px-4 py-3 pointer-events-none">
         <div className="flex items-center gap-3">
@@ -102,15 +84,17 @@ export function SceneOverlay({
           <FpsCounter />
         </div>
         <div className="pointer-events-auto flex items-center gap-1.5">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-foreground/40 hover:text-foreground/80 hover:bg-foreground/5 backdrop-blur-sm gap-1.5"
-            onClick={() => inputRef.current?.click()}
-          >
-            <ImageUp className="size-3.5" />
-            New image
-          </Button>
+          {onExportGLB && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-foreground/40 hover:text-foreground/80 hover:bg-foreground/5 backdrop-blur-sm gap-1.5"
+              onClick={onExportGLB}
+            >
+              <Download className="size-3.5" />
+              Export GLB
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon-sm"

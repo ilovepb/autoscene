@@ -2,18 +2,13 @@ export interface SceneBounds {
   min: [number, number, number];
   max: [number, number, number];
   center: [number, number, number];
-  pointCount: number;
 }
 
 export interface GeneratedLayer {
   id: string;
-  positions: Float32Array;
-  colors: Float32Array;
-  sizes: Float32Array;
-  count: number;
-  meshPositions?: Float32Array;
-  meshColors?: Float32Array;
-  meshVertexCount?: number;
+  meshPositions: Float32Array;
+  meshColors: Float32Array;
+  meshVertexCount: number;
   meshNormals?: Float32Array;
   hasCustomNormals?: boolean;
 }
@@ -26,11 +21,10 @@ export interface LayerMeta {
     max: [number, number, number];
     center: [number, number, number];
   };
-  pointCount: number;
   meshVertexCount: number;
 }
 
-/** Compute bounding box from a generated layer's point and mesh positions. */
+/** Compute bounding box from a generated layer's mesh positions. */
 export function computeLayerBounds(
   layer: GeneratedLayer,
 ): Omit<LayerMeta, "description"> {
@@ -41,33 +35,17 @@ export function computeLayerBounds(
   let maxY = -Infinity;
   let maxZ = -Infinity;
 
-  // Scan emit() point positions
-  for (let i = 0; i < layer.count; i++) {
-    const x = layer.positions[i * 3];
-    const y = layer.positions[i * 3 + 1];
-    const z = layer.positions[i * 3 + 2];
+  const mc = layer.meshVertexCount;
+  for (let i = 0; i < mc; i++) {
+    const x = layer.meshPositions[i * 3];
+    const y = layer.meshPositions[i * 3 + 1];
+    const z = layer.meshPositions[i * 3 + 2];
     if (x < minX) minX = x;
     if (x > maxX) maxX = x;
     if (y < minY) minY = y;
     if (y > maxY) maxY = y;
     if (z < minZ) minZ = z;
     if (z > maxZ) maxZ = z;
-  }
-
-  // Scan mesh vertex positions (sdfMesh, lathe, box, grid, etc.)
-  const mc = layer.meshVertexCount ?? 0;
-  if (layer.meshPositions && mc > 0) {
-    for (let i = 0; i < mc; i++) {
-      const x = layer.meshPositions[i * 3];
-      const y = layer.meshPositions[i * 3 + 1];
-      const z = layer.meshPositions[i * 3 + 2];
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-      if (z < minZ) minZ = z;
-      if (z > maxZ) maxZ = z;
-    }
   }
 
   // If no geometry was produced, return zeroed bounds instead of Infinity/NaN
@@ -81,39 +59,7 @@ export function computeLayerBounds(
         ? [0, 0, 0]
         : [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2],
     },
-    pointCount: layer.count,
     meshVertexCount: mc,
-  };
-}
-
-export function computeSceneBounds(
-  positions: Float32Array,
-  count: number,
-): SceneBounds {
-  let minX = Infinity;
-  let minY = Infinity;
-  let minZ = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  let maxZ = -Infinity;
-
-  for (let i = 0; i < count; i++) {
-    const x = positions[i * 3];
-    const y = positions[i * 3 + 1];
-    const z = positions[i * 3 + 2];
-    if (x < minX) minX = x;
-    if (x > maxX) maxX = x;
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
-    if (z < minZ) minZ = z;
-    if (z > maxZ) maxZ = z;
-  }
-
-  return {
-    min: [minX, minY, minZ],
-    max: [maxX, maxY, maxZ],
-    center: [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2],
-    pointCount: count,
   };
 }
 
@@ -191,38 +137,6 @@ function fbm3D(x, y, z, octaves, lacunarity, gain) {
 }
 
 // Initial capacity — arrays grow dynamically as needed (no hard limit)
-var _pointCap = 100000;
-let _count = 0;
-let _positions, _colors, _sizes;
-
-// Double the capacity of all point buffers when full
-function _growPoints() {
-  _pointCap *= 2;
-  var newPos = new Float32Array(_pointCap * 3);
-  var newCol = new Float32Array(_pointCap * 3);
-  var newSiz = new Float32Array(_pointCap);
-  newPos.set(_positions);
-  newCol.set(_colors);
-  newSiz.set(_sizes);
-  _positions = newPos;
-  _colors = newCol;
-  _sizes = newSiz;
-}
-
-function emit(x, y, z, r, g, b, size) {
-  if (_count >= _pointCap) _growPoints();
-  const i = _count * 3;
-  _positions[i] = x;
-  _positions[i + 1] = y;
-  _positions[i + 2] = z;
-  _colors[i] = r;
-  _colors[i + 1] = g;
-  _colors[i + 2] = b;
-  _sizes[_count] = (size !== undefined) ? size : 0.03;
-  _count++;
-}
-
-// Initial capacity — arrays grow dynamically as needed (no hard limit)
 var _meshCap = 300000;
 let _meshCount = 0;
 let _meshPositions, _meshColors;
@@ -282,18 +196,14 @@ function box(cx,cy,cz, sx,sy,sz, r,g,b) {
 // SDF Primitives — Signed Distance Functions
 // Each returns the signed distance from point (px,py,pz) to the surface.
 // Negative = inside, positive = outside, zero = on the surface.
-// All use individual floats (no array allocation) for performance.
 // =========================================================================
 
 // Signed distance to a sphere centered at origin with radius r.
-// The distance is simply how far the point is from the center, minus r.
 function sdSphere(px,py,pz, r) {
   return Math.sqrt(px*px + py*py + pz*pz) - r;
 }
 
 // Signed distance to an axis-aligned box centered at origin with half-extents (sx,sy,sz).
-// We compute the per-axis distance outside the box, then combine via Euclidean length.
-// The interior distance uses the largest (most negative) axis distance.
 function sdBox(px,py,pz, sx,sy,sz) {
   var dx = Math.abs(px) - sx;
   var dy = Math.abs(py) - sy;
@@ -303,7 +213,6 @@ function sdBox(px,py,pz, sx,sy,sz) {
 }
 
 // Signed distance to a capsule (line segment from a to b, with uniform radius r).
-// Project the point onto the line segment, clamp to [0,1], measure distance to that point.
 function sdCapsule(px,py,pz, ax,ay,az, bx,by,bz, r) {
   var bax = bx-ax, bay = by-ay, baz = bz-az;
   var pax = px-ax, pay = py-ay, paz = pz-az;
@@ -313,41 +222,27 @@ function sdCapsule(px,py,pz, ax,ay,az, bx,by,bz, r) {
 }
 
 // Signed distance to a torus lying in the XZ plane, centered at origin.
-// R = major radius (center of tube to center of torus), r = minor radius (tube thickness).
-// First compute the distance from the point to the torus ring in XZ, then subtract tube radius.
 function sdTorus(px,py,pz, R, r) {
   var qx = Math.sqrt(px*px + pz*pz) - R;
   return Math.sqrt(qx*qx + py*py) - r;
 }
 
 // Signed distance to a cone with tip at origin, opening downward along -Y.
-// r = base radius, h = height. The base is at y = -h.
-// Modeled as intersection of three half-spaces: cone surface, tip plane, base plane.
-// Not an exact Euclidean SDF near edges, but sign is always correct, which is
-// what marching cubes needs for proper iso-surface extraction.
 function sdCone(px,py,pz, r, h) {
   var q = Math.sqrt(px*px + pz*pz);
-  // Cone surface in 2D (q,y): line from tip (0,0) to base rim (r,-h).
-  // Outward normal to this line is (h, r), normalized.
   var nLen = Math.sqrt(h*h + r*r);
-  // Signed distance to the infinite cone surface (positive = outside)
   var coneDist = (q * h + py * r) / nLen;
-  // Signed distance to tip cap plane at y=0 (positive = above tip)
   var tipDist = py;
-  // Signed distance to base cap plane at y=-h (positive = below base)
   var capDist = -py - h;
-  // Intersection of half-spaces: max gives correct sign everywhere
   return Math.max(coneDist, Math.max(tipDist, capDist));
 }
 
 // Signed distance to an infinite plane with normal (nx,ny,nz) at distance d from origin.
-// Simply the dot product of the point with the normal, minus offset.
 function sdPlane(px,py,pz, nx,ny,nz, d) {
   return px*nx + py*ny + pz*nz - d;
 }
 
 // Signed distance to a cylinder aligned along Y axis, centered at origin.
-// r = radius, h = half-height. Includes end caps.
 function sdCylinder(px,py,pz, r, h) {
   var d = Math.sqrt(px*px + pz*pz) - r;
   var dy = Math.abs(py) - h;
@@ -356,56 +251,112 @@ function sdCylinder(px,py,pz, r, h) {
   return outside + inside;
 }
 
+// Ellipsoid (approximate SDF) — centered at origin with radii (rx,ry,rz).
+function sdEllipsoid(px,py,pz, rx,ry,rz) {
+  var k0 = Math.sqrt(px*px/(rx*rx) + py*py/(ry*ry) + pz*pz/(rz*rz));
+  var k1 = Math.sqrt(px*px/(rx*rx*rx*rx) + py*py/(ry*ry*ry*ry) + pz*pz/(rz*rz*rz*rz));
+  return k0 * (k0 - 1.0) / k1;
+}
+
+// Octahedron (exact SDF) — centered at origin with size s.
+function sdOctahedron(px,py,pz, s) {
+  px=Math.abs(px); py=Math.abs(py); pz=Math.abs(pz);
+  var m = px + py + pz - s;
+  var q;
+  if (3*px < m) q = [px,py,pz];
+  else if (3*py < m) q = [py,pz,px];
+  else if (3*pz < m) q = [pz,px,py];
+  else return m * 0.57735027;
+  var k = Math.max(0, Math.min(s, 0.5*(q[2]-q[1]+s)));
+  return Math.sqrt((q[0])*(q[0]) + (q[1]-s+k)*(q[1]-s+k) + (q[2]-k)*(q[2]-k));
+}
+
+// Hex Prism (approximate SDF) — centered at origin with half-height h and radius r.
+function sdHexPrism(px,py,pz, h,r) {
+  px=Math.abs(px); pz=Math.abs(pz);
+  var d = Math.max(px*0.866025+pz*0.5, pz) - r;
+  return Math.sqrt(Math.max(d,0)*Math.max(d,0) + Math.max(Math.abs(py)-h,0)*Math.max(Math.abs(py)-h,0)) + Math.min(Math.max(d,Math.abs(py)-h),0);
+}
+
 // =========================================================================
 // SDF Operators — Combine or modify signed distance fields
 // =========================================================================
 
-// Boolean union: the closer surface wins (minimum distance)
 function opUnion(d1, d2) { return Math.min(d1, d2); }
-
-// Boolean subtraction: carve d2 out of d1 (invert d2, take max)
 function opSubtract(d1, d2) { return Math.max(d1, -d2); }
-
-// Boolean intersection: only the overlap region (maximum distance)
 function opIntersect(d1, d2) { return Math.max(d1, d2); }
 
-// Smooth blend (union): cubic interpolation between two surfaces.
-// k controls the blend radius — larger k = wider, smoother blend zone.
 function opSmoothUnion(d1, d2, k) {
   var h = Math.max(0, Math.min(1, 0.5 + 0.5*(d2-d1)/k));
   return d2*(1-h) + d1*h - k*h*(1-h);
 }
-
-// Smooth subtraction: smoothly carve d2 from d1 with blend radius k.
 function opSmoothSubtract(d1, d2, k) {
   var h = Math.max(0, Math.min(1, 0.5 - 0.5*(d1+d2)/k));
   return d1*(1-h) + (-d2)*h + k*h*(1-h);
 }
-
-// Smooth intersection: smoothly intersect d1 and d2 with blend radius k.
 function opSmoothIntersect(d1, d2, k) {
   var h = Math.max(0, Math.min(1, 0.5 - 0.5*(d2-d1)/k));
   return d2*(1-h) + d1*h + k*h*(1-h);
 }
 
-// Round an SDF by shrinking the surface inward by r, making edges rounded.
 function opRound(d, r) { return d - r; }
-
-// Displace an SDF by adding a noise value to the distance.
-// Pass the result of noise3D/fbm3D as the displacement amount.
 function opDisplace(d, displacement) { return d + displacement; }
+
+// XOR — only non-overlapping regions
+function opXOR(d1, d2) {
+  return Math.max(Math.min(d1,d2), -Math.max(d1,d2));
+}
+
+// Chamfer union — beveled edge between two shapes
+function opChamfer(d1, d2) {
+  var ch = (d1 + d2) * 0.707;
+  return Math.min(Math.min(d1,d2), ch);
+}
+
+// Stair-step union — quantized blend between two shapes
+function opStairs(d1, d2, r, n) {
+  var s = r/n, u = d2 - r;
+  return Math.min(Math.min(d1,d2), 0.5*(u+d1+Math.abs(((u-d1)%s+s)%s*2-s)));
+}
+
+// Shell/Onion — turn any solid into a thin shell of given thickness
+function opShell(d, thickness) { return Math.abs(d) - thickness; }
+function opOnion(d, thickness) { return Math.abs(d) - thickness; }
+
+// =========================================================================
+// Domain Operations — transform query point before SDF evaluation
+// =========================================================================
+
+// Mirror across YZ plane (reflect x)
+function domainMirror(px) { return Math.abs(px); }
+
+// Infinite repetition along one axis with given spacing
+// Returns the local coordinate to use instead of px
+function domainRepeat(px, spacing) {
+  return ((px % spacing) + spacing) % spacing - spacing / 2;
+}
+
+// Twist around Y axis — rotates XZ by angle proportional to Y
+// Returns [rx, rz] to use instead of [px, pz]
+function domainTwist(px, py, pz, k) {
+  var c = Math.cos(k * py), s = Math.sin(k * py);
+  return [px * c - pz * s, px * s + pz * c];
+}
+
+// Bend around X axis — rotates XY by angle proportional to X
+// Returns [bx, by] to use instead of [px, py]
+function domainBend(px, py, k) {
+  var c = Math.cos(k * px), s = Math.sin(k * px);
+  return [px * c - py * s, px * s + py * c];
+}
 
 // =========================================================================
 // Smooth normal mesh buffer
-// For marching cubes output: stores per-vertex normals computed from SDF
-// gradients, giving smooth shading without flat-face artifacts.
 // =========================================================================
 var _meshNormals;
 var _hasCustomNormals = false;
 
 // Emit a triangle with explicit per-vertex normals (for smooth shading).
-// Unlike emitTriangle which relies on computeVertexNormals(), this stores
-// normals directly so the renderer can interpolate across the face.
 function _emitSmoothTriangle(
   x1,y1,z1, nx1,ny1,nz1,
   x2,y2,z2, nx2,ny2,nz2,
@@ -433,11 +384,6 @@ function _emitSmoothTriangle(
 
 // =========================================================================
 // Marching Cubes Lookup Tables
-// Standard tables for the marching cubes algorithm. Each of the 256 possible
-// cube configurations (8 corners, each inside or outside) maps to:
-// - MC_EDGE_TABLE: a 12-bit mask of which edges are intersected by the surface
-// - MC_TRI_TABLE: up to 5 triangles (15 edge indices, -1 terminated) describing
-//   which edge intersection points form triangles
 // =========================================================================
 var MC_EDGE_TABLE = [0x0,0x109,0x203,0x30a,0x406,0x50f,0x605,0x70c,0x80c,0x905,0xa0f,0xb06,0xc0a,0xd03,0xe09,0xf00,0x190,0x99,0x393,0x29a,0x596,0x49f,0x795,0x69c,0x99c,0x895,0xb9f,0xa96,0xd9a,0xc93,0xf99,0xe90,0x230,0x339,0x33,0x13a,0x636,0x73f,0x435,0x53c,0xa3c,0xb35,0x83f,0x936,0xe3a,0xf33,0xc39,0xd30,0x3a0,0x2a9,0x1a3,0xaa,0x7a6,0x6af,0x5a5,0x4ac,0xbac,0xaa5,0x9af,0x8a6,0xfaa,0xea3,0xda9,0xca0,0x460,0x569,0x663,0x76a,0x66,0x16f,0x265,0x36c,0xc6c,0xd65,0xe6f,0xf66,0x86a,0x963,0xa69,0xb60,0x5f0,0x4f9,0x7f3,0x6fa,0x1f6,0xff,0x3f5,0x2fc,0xdfc,0xcf5,0xfff,0xef6,0x9fa,0x8f3,0xbf9,0xaf0,0x650,0x759,0x453,0x55a,0x256,0x35f,0x55,0x15c,0xe5c,0xf55,0xc5f,0xd56,0xa5a,0xb53,0x859,0x950,0x7c0,0x6c9,0x5c3,0x4ca,0x3c6,0x2cf,0x1c5,0xcc,0xfcc,0xec5,0xdcf,0xcc6,0xbca,0xac3,0x9c9,0x8c0,0x8c0,0x9c9,0xac3,0xbca,0xcc6,0xdcf,0xec5,0xfcc,0xcc,0x1c5,0x2cf,0x3c6,0x4ca,0x5c3,0x6c9,0x7c0,0x950,0x859,0xb53,0xa5a,0xd56,0xc5f,0xf55,0xe5c,0x15c,0x55,0x35f,0x256,0x55a,0x453,0x759,0x650,0xaf0,0xbf9,0x8f3,0x9fa,0xef6,0xfff,0xcf5,0xdfc,0x2fc,0x3f5,0xff,0x1f6,0x6fa,0x7f3,0x4f9,0x5f0,0xb60,0xa69,0x963,0x86a,0xf66,0xe6f,0xd65,0xc6c,0x36c,0x265,0x16f,0x66,0x76a,0x663,0x569,0x460,0xca0,0xda9,0xea3,0xfaa,0x8a6,0x9af,0xaa5,0xbac,0x4ac,0x5a5,0x6af,0x7a6,0xaa,0x1a3,0x2a9,0x3a0,0xd30,0xc39,0xf33,0xe3a,0x936,0x83f,0xb35,0xa3c,0x53c,0x435,0x73f,0x636,0x13a,0x33,0x339,0x230,0xe90,0xf99,0xc93,0xd9a,0xa96,0xb9f,0x895,0x99c,0x69c,0x795,0x49f,0x596,0x29a,0x393,0x99,0x190,0xf00,0xe09,0xd03,0xc0a,0xb06,0xa0f,0x905,0x80c,0x70c,0x605,0x50f,0x406,0x30a,0x203,0x109,0x0];
 
@@ -461,21 +407,6 @@ var MC_TRI_TABLE = [[-1],
 
 // =========================================================================
 // sdfMesh() — Marching Cubes iso-surface extraction from an SDF function
-//
-// Pipeline:
-//   1. Evaluate the SDF on a regular 3D grid within the bounding box
-//   2. For each cubic cell, classify its 8 corners as inside/outside
-//   3. Look up which edges are intersected by the iso-surface
-//   4. Interpolate vertex positions along intersected edges
-//   5. Compute per-vertex normals from SDF gradient via central differences
-//   6. Emit smooth-shaded triangles with color from colorFn
-//
-// Parameters:
-//   sdfFn(x,y,z) — returns signed distance (negative = inside)
-//   colorFn(x,y,z) — returns [r,g,b] array at a surface point
-//   bMin [x,y,z] — minimum corner of evaluation bounding box
-//   bMax [x,y,z] — maximum corner of evaluation bounding box
-//   resolution — grid cells per axis (capped at 64 to prevent OOM)
 // =========================================================================
 function sdfMesh(sdfFn, colorFn, bMin, bMax, resolution) {
   var res = resolution || 32;
@@ -486,8 +417,7 @@ function sdfMesh(sdfFn, colorFn, bMin, bMax, resolution) {
   var dy = (bMax[1] - bMin[1]) / res;
   var dz = (bMax[2] - bMin[2]) / res;
 
-  // Phase 1: Evaluate SDF at every grid vertex into a flat Float32Array.
-  // Index layout: field[iz * ny * nx + iy * nx + ix]
+  // Phase 1: Evaluate SDF at every grid vertex
   var field = new Float32Array(nx * ny * nz);
   for (var iz = 0; iz < nz; iz++) {
     var pz = bMin[2] + iz * dz;
@@ -500,28 +430,24 @@ function sdfMesh(sdfFn, colorFn, bMin, bMax, resolution) {
     }
   }
 
-  // Small epsilon for computing SDF gradient via central differences.
-  // The gradient of an SDF at the surface points in the direction of the
-  // outward normal — this gives us smooth per-vertex normals for free.
+  // Epsilon for SDF gradient via central differences
   var eps = Math.max(dx, dy, dz) * 0.5;
 
-  // Phase 2 & 3: March through each cell and extract triangles
-  // Edge vertex indices: which two corners each of the 12 edges connects
+  // Edge vertex indices and corner offsets
   var edgeVerts = [
-    [0,1],[1,2],[2,3],[3,0], // bottom face edges
-    [4,5],[5,6],[6,7],[7,4], // top face edges
-    [0,4],[1,5],[2,6],[3,7]  // vertical edges
+    [0,1],[1,2],[2,3],[3,0],
+    [4,5],[5,6],[6,7],[7,4],
+    [0,4],[1,5],[2,6],[3,7]
   ];
-  // Corner offsets in (ix, iy, iz) for the 8 corners of a cube
   var cornerOffsets = [
     [0,0,0],[1,0,0],[1,1,0],[0,1,0],
     [0,0,1],[1,0,1],[1,1,1],[0,1,1]
   ];
 
+  // Phase 2-6: March through cells and extract triangles
   for (var iz = 0; iz < res; iz++) {
     for (var iy = 0; iy < res; iy++) {
       for (var ix = 0; ix < res; ix++) {
-        // Read SDF values at the 8 corners of this cell
         var vals = [];
         for (var c = 0; c < 8; c++) {
           var ci = ix + cornerOffsets[c][0];
@@ -530,18 +456,12 @@ function sdfMesh(sdfFn, colorFn, bMin, bMax, resolution) {
           vals[c] = field[ck * ny * nx + cj * nx + ci];
         }
 
-        // Phase 2: Classify cube — build an 8-bit index where bit i is set
-        // if corner i is inside the surface (SDF < 0)
         var cubeIndex = 0;
         for (var c = 0; c < 8; c++) {
           if (vals[c] < 0) cubeIndex |= (1 << c);
         }
-        // Skip cells entirely inside or outside the surface
         if (MC_EDGE_TABLE[cubeIndex] === 0) continue;
 
-        // Phase 3: Interpolate vertex positions along intersected edges.
-        // For each edge that crosses the surface, find where SDF = 0 via
-        // linear interpolation between the two endpoint SDF values.
         var edgeMask = MC_EDGE_TABLE[cubeIndex];
         var verts = [];
         for (var e = 0; e < 12; e++) {
@@ -549,17 +469,12 @@ function sdfMesh(sdfFn, colorFn, bMin, bMax, resolution) {
           var ev = edgeVerts[e];
           var c0 = cornerOffsets[ev[0]], c1 = cornerOffsets[ev[1]];
           var v0 = vals[ev[0]], v1 = vals[ev[1]];
-          // t is the interpolation parameter: where SDF crosses zero on this edge
           var t = v0 / (v0 - v1);
-          // World-space position of the vertex
           var vx = bMin[0] + (ix + c0[0] + (c1[0]-c0[0])*t) * dx;
           var vy = bMin[1] + (iy + c0[1] + (c1[1]-c0[1])*t) * dy;
           var vz = bMin[2] + (iz + c0[2] + (c1[2]-c0[2])*t) * dz;
 
-          // Phase 5: Compute normal from SDF gradient via central differences.
-          // The gradient of a distance field at the surface equals the outward
-          // unit normal. We approximate it with finite differences:
-          //   n_x ≈ (sdf(x+ε) - sdf(x-ε)) / (2ε)
+          // Normal from SDF gradient via central differences
           var gnx = sdfFn(vx+eps,vy,vz) - sdfFn(vx-eps,vy,vz);
           var gny = sdfFn(vx,vy+eps,vz) - sdfFn(vx,vy-eps,vz);
           var gnz = sdfFn(vx,vy,vz+eps) - sdfFn(vx,vy,vz-eps);
@@ -567,20 +482,15 @@ function sdfMesh(sdfFn, colorFn, bMin, bMax, resolution) {
           verts[e] = [vx, vy, vz, gnx/glen, gny/glen, gnz/glen];
         }
 
-        // Phase 4: Look up triangle list and emit smooth-shaded triangles.
-        // MC_TRI_TABLE gives sequences of edge indices forming triangles.
         var tris = MC_TRI_TABLE[cubeIndex];
         for (var t = 0; t < tris.length - 1; t += 3) {
           if (tris[t] === -1) break;
           var a = verts[tris[t]], b = verts[tris[t+1]], c = verts[tris[t+2]];
           if (!a || !b || !c) continue;
 
-          // Phase 6: Color from colorFn at triangle centroid
           var cx = (a[0]+b[0]+c[0])/3, cy = (a[1]+b[1]+c[1])/3, cz = (a[2]+b[2]+c[2])/3;
           var col = colorFn(cx, cy, cz);
 
-          // Emit triangle with per-vertex normals for smooth shading.
-          // Winding order: counter-clockwise when viewed from outside (normals point outward)
           _emitSmoothTriangle(
             a[0],a[1],a[2], a[3],a[4],a[5],
             b[0],b[1],b[2], b[3],b[4],b[5],
@@ -595,54 +505,36 @@ function sdfMesh(sdfFn, colorFn, bMin, bMax, resolution) {
 
 // =========================================================================
 // lathe() — Surface of Revolution
-// Generates a rotationally-symmetric mesh by revolving a 2D profile around
-// the Y axis. Generalizes sphere and cylinder into arbitrary profiles
-// (mushroom caps, vases, columns, tree trunks with taper, etc.).
-//
-// Parameters:
-//   cx,cy,cz — center of revolution
-//   profile — array of [radius, yOffset] pairs defining the cross-section.
-//             The profile is revolved around the Y axis at (cx, cy+yOffset, cz).
-//             Order matters: adjacent pairs form connected rings.
-//   segments — number of angular subdivisions (higher = smoother)
-//   r,g,b — face color
 // =========================================================================
-function lathe(cx,cy,cz, profile, segments, r,g,b) {
+function lathe(cx,cy,cz, profile, segments, r,g,b, angleOffset) {
   segments = segments || 16;
+  angleOffset = angleOffset || 0;
   var pLen = profile.length;
   if (pLen < 2) return;
 
-  // Precompute trig tables for angular subdivisions
+  // Pre-compute sin/cos for each segment step, offset by angleOffset
   var cosA = [], sinA = [];
   for (var i = 0; i <= segments; i++) {
-    var angle = 2 * Math.PI * i / segments;
+    var angle = angleOffset + 2 * Math.PI * i / segments;
     cosA[i] = Math.cos(angle);
     sinA[i] = Math.sin(angle);
   }
 
-  // Connect adjacent profile points with quads (or triangles at poles)
   for (var p = 0; p < pLen - 1; p++) {
     var r0 = profile[p][0], y0 = cy + profile[p][1];
     var r1 = profile[p+1][0], y1 = cy + profile[p+1][1];
 
     for (var s = 0; s < segments; s++) {
-      // Four corners of the quad between two profile rings
       var bx0 = cx + r0 * cosA[s],   bz0 = cz + r0 * sinA[s];
       var bx1 = cx + r0 * cosA[s+1], bz1 = cz + r0 * sinA[s+1];
       var tx0 = cx + r1 * cosA[s],   tz0 = cz + r1 * sinA[s];
       var tx1 = cx + r1 * cosA[s+1], tz1 = cz + r1 * sinA[s+1];
 
       if (r0 === 0) {
-        // Degenerate top pole: triangle fan from pole to next ring
-        // Winding: outward-facing normal (CCW from outside)
         emitTriangle(cx,y0,cz, tx1,y1,tz1, tx0,y1,tz0, r,g,b);
       } else if (r1 === 0) {
-        // Degenerate bottom pole: triangle fan from ring to pole
-        // Winding: outward-facing normal (CCW from outside)
         emitTriangle(bx0,y0,bz0, bx1,y0,bz1, cx,y1,cz, r,g,b);
       } else {
-        // Standard quad between two rings
-        // Winding: outward-facing normal (CCW from outside)
         emitQuad(bx0,y0,bz0, bx1,y0,bz1, tx1,y1,tz1, tx0,y1,tz0, r,g,b);
       }
     }
@@ -665,43 +557,36 @@ function extrudePath(profile, path, closed, r,g,b) {
 
   // Build rotation-minimizing frames via double reflection
   var normals = [], binormals = [];
-  // Initial frame: pick an arbitrary vector not parallel to the first tangent
   var t0 = tangents[0];
   var notParallel = Math.abs(t0[0]) < 0.9;
   var arbx = notParallel ? 1 : 0;
   var arby = notParallel ? 0 : 1;
-  // Cross product t0 x arb (arbz is always 0)
   var nx = -t0[2]*arby;
   var ny = t0[2]*arbx;
   var nz = t0[0]*arby - t0[1]*arbx;
   var nLen = Math.sqrt(nx*nx+ny*ny+nz*nz) || 1;
   normals[0] = [nx/nLen, ny/nLen, nz/nLen];
-  // Binormal = tangent x normal
   binormals[0] = [
     t0[1]*normals[0][2] - t0[2]*normals[0][1],
     t0[2]*normals[0][0] - t0[0]*normals[0][2],
     t0[0]*normals[0][1] - t0[1]*normals[0][0]
   ];
 
-  // Propagate frames along path using double reflection (rotation-minimizing)
   for (var i = 1; i < pathLen; i++) {
     var ti = tangents[i-1], tj = tangents[i];
     var pi = path[i-1], pj = path[i];
     var vx = pj[0]-pi[0], vy = pj[1]-pi[1], vz = pj[2]-pi[2];
     var c1 = vx*vx+vy*vy+vz*vz;
-    // Degenerate segment: copy previous frame
     if (c1 < 1e-10) {
       normals[i] = normals[i-1];
       binormals[i] = binormals[i-1];
       continue;
     }
-    // Reflect previous normal across the segment midpoint plane
     var nPrev = normals[i-1];
     var dot1n = (vx*nPrev[0]+vy*nPrev[1]+vz*nPrev[2])/c1*2;
     var rn = [nPrev[0]-dot1n*vx, nPrev[1]-dot1n*vy, nPrev[2]-dot1n*vz];
     var dot1t = (vx*ti[0]+vy*ti[1]+vz*ti[2])/c1*2;
     var rt = [ti[0]-dot1t*vx, ti[1]-dot1t*vy, ti[2]-dot1t*vz];
-    // Reflect again to align with the actual tangent at this point
     var v2x = tj[0]-rt[0], v2y = tj[1]-rt[1], v2z = tj[2]-rt[2];
     var c2 = v2x*v2x+v2y*v2y+v2z*v2z;
     if (c2 < 1e-10) {
@@ -717,7 +602,6 @@ function extrudePath(profile, path, closed, r,g,b) {
     ];
   }
 
-  // Build rings and connect with quads
   var rings = [];
   for (var i = 0; i < pathLen; i++) {
     var ring = [];
@@ -729,7 +613,6 @@ function extrudePath(profile, path, closed, r,g,b) {
     rings[i] = ring;
   }
 
-  // Connect adjacent rings
   for (var i = 0; i < pathLen-1; i++) {
     var r0 = rings[i], r1 = rings[i+1];
     var jMax = closed ? pLen : pLen - 1;
@@ -748,7 +631,6 @@ function extrudePath(profile, path, closed, r,g,b) {
 
 function grid(x0,z0, x1,z1, resX,resZ, heightFn, colorFn) {
   var stepX = (x1-x0)/resX, stepZ = (z1-z0)/resZ;
-  // Precompute heights
   var heights = [];
   for (var i = 0; i <= resX; i++) {
     heights[i] = [];
@@ -756,7 +638,6 @@ function grid(x0,z0, x1,z1, resX,resZ, heightFn, colorFn) {
       heights[i][j] = heightFn(x0+i*stepX, z0+j*stepZ);
     }
   }
-  // Emit quads
   for (var i = 0; i < resX; i++) {
     for (var j = 0; j < resZ; j++) {
       var px = x0+i*stepX, pz = z0+j*stepZ;
@@ -772,14 +653,53 @@ function grid(x0,z0, x1,z1, resX,resZ, heightFn, colorFn) {
   }
 }
 
+// --- Convenience helpers for common shapes ---
+// These reduce boilerplate for simple single-primitive meshes.
+
+function sphereMesh(cx, cy, cz, radius, r, g, b, res) {
+  res = res || 64;
+  var pad = radius * 1.3;
+  sdfMesh(
+    function(x, y, z) { return sdSphere(x - cx, y - cy, z - cz, radius); },
+    function() { return [r, g, b]; },
+    [cx - pad, cy - pad, cz - pad], [cx + pad, cy + pad, cz + pad], res
+  );
+}
+
+function boxMesh(cx, cy, cz, sx, sy, sz, r, g, b, res) {
+  res = res || 64;
+  // Half-extents plus 30% padding for marching cubes bounds
+  var px = sx * 0.5 * 1.3, py = sy * 0.5 * 1.3, pz = sz * 0.5 * 1.3;
+  sdfMesh(
+    function(x, y, z) { return sdBox(x - cx, y - cy, z - cz, sx * 0.5, sy * 0.5, sz * 0.5); },
+    function() { return [r, g, b]; },
+    [cx - px, cy - py, cz - pz], [cx + px, cy + py, cz + pz], res
+  );
+}
+
+function cylinderMesh(cx, cy, cz, radius, height, r, g, b, res) {
+  res = res || 64;
+  var padR = radius * 1.3, padH = height * 0.5 * 1.3;
+  sdfMesh(
+    function(x, y, z) { return sdCylinder(x - cx, y - cy, z - cz, radius, height * 0.5); },
+    function() { return [r, g, b]; },
+    [cx - padR, cy - padH, cz - padR], [cx + padR, cy + padH, cz + padR], res
+  );
+}
+
+function torusMesh(cx, cy, cz, majorR, minorR, r, g, b, res) {
+  res = res || 64;
+  var padXZ = (majorR + minorR) * 1.3, padY = minorR * 1.3;
+  sdfMesh(
+    function(x, y, z) { return sdTorus(x - cx, y - cy, z - cz, majorR, minorR); },
+    function() { return [r, g, b]; },
+    [cx - padXZ, cy - padY, cz - padXZ], [cx + padXZ, cy + padY, cz + padXZ], res
+  );
+}
+
 self.onmessage = function(e) {
   const { code, seed, sceneBounds } = e.data;
   _seed = seed || 42;
-  _count = 0;
-  _pointCap = 100000;
-  _positions = new Float32Array(_pointCap * 3);
-  _colors = new Float32Array(_pointCap * 3);
-  _sizes = new Float32Array(_pointCap);
   _meshCount = 0;
   _meshCap = 300000;
   _meshPositions = new Float32Array(_meshCap * 3);
@@ -796,48 +716,66 @@ self.onmessage = function(e) {
   const SCENE_CENTER_X = sceneBounds.center[0];
   const SCENE_CENTER_Y = sceneBounds.center[1];
   const SCENE_CENTER_Z = sceneBounds.center[2];
-  const POINT_COUNT = sceneBounds.pointCount;
 
-  const fn = new Function(
-    "emit", "emitTriangle", "emitQuad",
-    "box", "extrudePath", "grid", "sdfMesh", "lathe",
-    "sdSphere", "sdBox", "sdCapsule", "sdTorus", "sdCone", "sdPlane", "sdCylinder",
-    "opUnion", "opSubtract", "opIntersect",
-    "opSmoothUnion", "opSmoothSubtract", "opSmoothIntersect",
-    "opRound", "opDisplace",
-    "noise2D", "noise3D", "fbm2D", "fbm3D", "random", "Math",
-    "SCENE_MIN_X", "SCENE_MAX_X", "SCENE_MIN_Y", "SCENE_MAX_Y",
-    "SCENE_MIN_Z", "SCENE_MAX_Z", "SCENE_CENTER_X", "SCENE_CENTER_Y",
-    "SCENE_CENTER_Z", "POINT_COUNT",
-    code
-  );
-  fn(
-    emit, emitTriangle, emitQuad,
-    box, extrudePath, grid, sdfMesh, lathe,
-    sdSphere, sdBox, sdCapsule, sdTorus, sdCone, sdPlane, sdCylinder,
-    opUnion, opSubtract, opIntersect,
-    opSmoothUnion, opSmoothSubtract, opSmoothIntersect,
-    opRound, opDisplace,
-    noise2D, noise3D, fbm2D, fbm3D, _mulberry32, Math,
-    SCENE_MIN_X, SCENE_MAX_X, SCENE_MIN_Y, SCENE_MAX_Y,
-    SCENE_MIN_Z, SCENE_MAX_Z, SCENE_CENTER_X, SCENE_CENTER_Y,
-    SCENE_CENTER_Z, POINT_COUNT
-  );
+  try {
+    const fn = new Function(
+      "emitTriangle", "emitQuad",
+      "box", "extrudePath", "grid", "sdfMesh", "lathe",
+      "sdSphere", "sdBox", "sdCapsule", "sdTorus", "sdCone", "sdPlane", "sdCylinder",
+      "sdEllipsoid", "sdOctahedron", "sdHexPrism",
+      "opUnion", "opSubtract", "opIntersect",
+      "opSmoothUnion", "opSmoothSubtract", "opSmoothIntersect",
+      "opRound", "opDisplace",
+      "opXOR", "opChamfer", "opStairs", "opShell", "opOnion",
+      "domainMirror", "domainRepeat", "domainTwist", "domainBend",
+      "noise2D", "noise3D", "fbm2D", "fbm3D", "random", "Math",
+      "SCENE_MIN_X", "SCENE_MAX_X", "SCENE_MIN_Y", "SCENE_MAX_Y",
+      "SCENE_MIN_Z", "SCENE_MAX_Z", "SCENE_CENTER_X", "SCENE_CENTER_Y",
+      "SCENE_CENTER_Z",
+      "sphereMesh", "boxMesh", "cylinderMesh", "torusMesh",
+      code
+    );
+    fn(
+      emitTriangle, emitQuad,
+      box, extrudePath, grid, sdfMesh, lathe,
+      sdSphere, sdBox, sdCapsule, sdTorus, sdCone, sdPlane, sdCylinder,
+      sdEllipsoid, sdOctahedron, sdHexPrism,
+      opUnion, opSubtract, opIntersect,
+      opSmoothUnion, opSmoothSubtract, opSmoothIntersect,
+      opRound, opDisplace,
+      opXOR, opChamfer, opStairs, opShell, opOnion,
+      domainMirror, domainRepeat, domainTwist, domainBend,
+      noise2D, noise3D, fbm2D, fbm3D, _mulberry32, Math,
+      SCENE_MIN_X, SCENE_MAX_X, SCENE_MIN_Y, SCENE_MAX_Y,
+      SCENE_MIN_Z, SCENE_MAX_Z, SCENE_CENTER_X, SCENE_CENTER_Y,
+      SCENE_CENTER_Z,
+      sphereMesh, boxMesh, cylinderMesh, torusMesh
+    );
+  } catch (err) {
+    // Send structured error back with partial progress info
+    self.postMessage({
+      error: true,
+      message: err.message || "Unknown runtime error",
+      stack: err.stack || "",
+      meshVertexCount: _meshCount
+    });
+    return;
+  }
 
-  const positions = _positions.slice(0, _count * 3);
-  const colors = _colors.slice(0, _count * 3);
-  const sizes = _sizes.slice(0, _count);
   const meshPositions = _meshPositions.slice(0, _meshCount * 3);
   const meshColors = _meshColors.slice(0, _meshCount * 3);
   const meshNormals = _meshNormals.slice(0, _meshCount * 3);
-  const transferables = [positions.buffer, colors.buffer, sizes.buffer, meshPositions.buffer, meshColors.buffer];
+  const transferables = [meshPositions.buffer, meshColors.buffer];
   if (_hasCustomNormals) transferables.push(meshNormals.buffer);
   self.postMessage(
-    { positions, colors, sizes, count: _count, meshPositions, meshColors, meshVertexCount: _meshCount, meshNormals: _hasCustomNormals ? meshNormals : null, hasCustomNormals: _hasCustomNormals },
+    { meshPositions, meshColors, meshVertexCount: _meshCount, meshNormals: _hasCustomNormals ? meshNormals : null, hasCustomNormals: _hasCustomNormals },
     transferables
   );
 };
 `;
+
+import { validateMeshOutput } from "@/lib/sandbox/outputValidation";
+import { validateCode } from "@/lib/sandbox/validate";
 
 let _workerBlobUrl: string | null = null;
 
@@ -856,6 +794,14 @@ export function executeProceduralCode(
   bounds: SceneBounds,
   seed?: number,
 ): Promise<GeneratedLayer> {
+  // AST validation — reject dangerous code before creating the worker
+  const validation = validateCode(code);
+  if (!validation.valid) {
+    return Promise.reject(
+      new Error(`Code validation failed: ${validation.error}`),
+    );
+  }
+
   return new Promise((resolve, reject) => {
     const worker = new Worker(getWorkerBlobUrl());
     const timeout = setTimeout(() => {
@@ -866,21 +812,52 @@ export function executeProceduralCode(
     worker.onmessage = (e) => {
       clearTimeout(timeout);
       worker.terminate();
+
+      // Check for structured runtime errors from the worker's try/catch
+      if (e.data.error) {
+        const {
+          message,
+          stack,
+          meshVertexCount: partialCount,
+        } = e.data as {
+          error: true;
+          message: string;
+          stack: string;
+          meshVertexCount: number;
+        };
+        // Extract line number from stack trace (anonymous function lines)
+        const lineMatch = stack.match(/<anonymous>:(\d+):(\d+)/);
+        let detail = `Runtime error: ${message}`;
+        if (lineMatch) {
+          const lineNum = Number.parseInt(lineMatch[1], 10);
+          // The code is wrapped in a function body, so line numbers are 1-indexed
+          // relative to the user code
+          const codeLines = code.split("\n");
+          // new Function adds a wrapper — line 1 in stack = first line of user code
+          const offendingLine =
+            lineNum >= 1 && lineNum <= codeLines.length
+              ? codeLines[lineNum - 1].trim()
+              : null;
+          detail += ` (line ${lineNum}`;
+          if (offendingLine) {
+            detail += `: \`${offendingLine}\``;
+          }
+          detail += ")";
+        }
+        if (partialCount > 0) {
+          detail += `. Generated ${partialCount} vertices before error.`;
+        }
+        reject(new Error(detail));
+        return;
+      }
+
       const {
-        positions,
-        colors,
-        sizes,
-        count,
         meshPositions,
         meshColors,
         meshVertexCount,
         meshNormals,
         hasCustomNormals,
       } = e.data as {
-        positions: Float32Array;
-        colors: Float32Array;
-        sizes: Float32Array;
-        count: number;
         meshPositions: Float32Array;
         meshColors: Float32Array;
         meshVertexCount: number;
@@ -889,20 +866,32 @@ export function executeProceduralCode(
       };
       const layer: GeneratedLayer = {
         id: `layer-${_nextLayerId++}`,
-        positions,
-        colors,
-        sizes,
-        count,
+        meshPositions,
+        meshColors,
+        meshVertexCount,
       };
-      if (meshVertexCount > 0) {
-        layer.meshPositions = meshPositions;
-        layer.meshColors = meshColors;
-        layer.meshVertexCount = meshVertexCount;
-        if (hasCustomNormals && meshNormals) {
-          layer.meshNormals = meshNormals;
-          layer.hasCustomNormals = true;
-        }
+      if (hasCustomNormals && meshNormals) {
+        layer.meshNormals = meshNormals;
+        layer.hasCustomNormals = true;
       }
+
+      // Validate mesh output — reject if hard errors, log warnings
+      const meshValidation = validateMeshOutput(layer);
+      if (!meshValidation.valid) {
+        reject(
+          new Error(
+            `Mesh validation failed: ${meshValidation.errors.join("; ")}`,
+          ),
+        );
+        return;
+      }
+      if (meshValidation.warnings.length > 0) {
+        console.warn(
+          "[autoscene] Mesh warnings:",
+          meshValidation.warnings.join("; "),
+        );
+      }
+
       resolve(layer);
     };
 

@@ -1,97 +1,52 @@
 export const SKILLS: Record<string, string> = {
-  "advanced-sdf": `# Advanced SDF Techniques
+  "advanced-sdf": `KEY RULES: sdfFn(x,y,z)→number, colorFn(x,y,z)→[r,g,b]. Three separate number args, NOT arrays. Always return. Pad bMin/bMax 20%+. Dimension args = constants only.
 
-## Inline Primitives (implement directly in sdfFn)
+# Advanced SDF Techniques
 
-Ellipsoid (approximate):
-  function sdEllipsoid(px,py,pz, rx,ry,rz) {
-    var k0 = Math.sqrt(px*px/(rx*rx) + py*py/(ry*ry) + pz*pz/(rz*rz));
-    var k1 = Math.sqrt(px*px/(rx*rx*rx*rx) + py*py/(ry*ry*ry*ry) + pz*pz/(rz*rz*rz*rz));
-    return k0 * (k0 - 1.0) / k1;
-  }
+## Positioning Reminder
+To place a shape at world (wx, wy, wz): pass (x-wx, y-wy, z-wz) as the query point.
+WRONG: sdSphere(wx, wy, wz, r) — this is a fixed point, not a distance field
+RIGHT: sdSphere(x-wx, y-wy, z-wz, r) — evaluates distance from every query point
 
-Rounded Box: sdBox(px,py,pz, sx,sy,sz) - radius
+## Domain Techniques
 
-Octahedron (exact):
-  function sdOctahedron(px,py,pz, s) {
-    px=Math.abs(px); py=Math.abs(py); pz=Math.abs(pz);
-    var m = px + py + pz - s;
-    var q;
-    if (3*px < m) q = [px,py,pz];
-    else if (3*py < m) q = [py,pz,px];
-    else if (3*pz < m) q = [pz,px,py];
-    else return m * 0.57735027;
-    var k = Math.max(0, Math.min(s, 0.5*(q[2]-q[1]+s)));
-    return Math.sqrt((q[0])*(q[0]) + (q[1]-s+k)*(q[1]-s+k) + (q[2]-k)*(q[2]-k));
-  }
+Mirror/Symmetry — model one side, both render:
+  var mx = domainMirror(lx);  // reflects across YZ plane
+  // Use mx instead of lx in SDF calls. Combine axes for 2/4/8-fold symmetry.
 
-Hex Prism (approximate):
-  function sdHexPrism(px,py,pz, h,r) {
-    px=Math.abs(px); pz=Math.abs(pz);
-    var d = Math.max(px*0.866025+pz*0.5, pz) - r;
-    return Math.sqrt(Math.max(d,0)*Math.max(d,0) + Math.max(Math.abs(py)-h,0)*Math.max(Math.abs(py)-h,0)) + Math.min(Math.max(d,Math.abs(py)-h),0);
-  }
+Infinite Repetition — tile space along an axis:
+  var repX = domainRepeat(lx, spacing);
+  // Use repX instead of lx. Produces infinite copies spaced evenly.
 
-## Domain Operations (transform query point before SDF eval)
+Limited Repetition — clamp to N copies per side:
+  var repX = lx - spacing * Math.max(-N, Math.min(N, Math.round(lx/spacing)));
 
-Mirror/Symmetry — reflect across plane:
-  px = Math.abs(px);  // mirror across YZ plane
-Both sides render the same shape. Combine axes for 2/4/8-fold symmetry.
+Instance ID for per-copy variation:
+  var id = Math.round(lx/spacing);
+  var variation = noise2D(id * 100, 0); // unique per instance
 
-Infinite Repetition — tile space:
-  var repX = ((px - offset) % spacing + spacing) % spacing - spacing/2;
-Use repX instead of px in SDF calls. Produces infinite copies.
+Twist — rotate XZ proportional to Y:
+  var tw = domainTwist(lx, ly, lz, k);
+  var rx = tw[0], rz = tw[1];
+  // Use (rx, ly, rz) instead of (lx, ly, lz). k = twist rate.
 
-Limited Repetition — clamp number of copies:
-  var repX = px - spacing * Math.max(-N, Math.min(N, Math.round(px/spacing)));
-N = number of copies on each side.
+Bend — rotate XY proportional to X:
+  var bn = domainBend(lx, ly, k);
+  var bx = bn[0], by = bn[1];
 
-Instance ID for variation:
-  var id = Math.round(px/spacing);
-Use id to seed per-instance randomness (noise2D(id*100, 0)).
+Elongation — stretch shape along axis while preserving ends:
+  var ex = Math.max(Math.abs(lx) - h, 0) * (lx > 0 ? 1 : -1);
+  // Use ex instead of lx. Stretches by 2h along X.
 
-Twist — rotate XZ by angle proportional to Y:
-  var c = Math.cos(k*py), s = Math.sin(k*py);
-  var rx = px*c - pz*s, rz = px*s + pz*c;
-Use rx,rz instead of px,pz. k controls twist rate.
-
-Bend — rotate XY by angle proportional to X:
-  var c = Math.cos(k*px), s = Math.sin(k*px);
-  var ry = px*s + py*c; px = px*c - py*s; py = ry;
-
-Elongation — stretch shape along axis:
-  var ex = Math.max(Math.abs(px)-h, 0) * (px>0?1:-1);
-Use ex instead of px. Stretches by 2h along X while preserving shape at ends.
-
-Uniform Scale — scale any SDF:
-  return sdfFn(px/s, py/s, pz/s) * s;
-Evaluates SDF in scaled space, corrects distance.
+Uniform Scale:
+  return sdfFn(lx/s, ly/s, lz/s) * s;
 
 ## Shell / Onion
+Turn any solid into a thin shell: var d = opShell(solidSDF, thickness);
+Stack for concentric layers: opOnion(opOnion(d, t1), t2)
 
-Turn any solid into a thin shell:
-  var d = Math.abs(sdfFn(px,py,pz)) - thickness;
-Stack for concentric layers: Math.abs(Math.abs(d) - t1) - t2
-
-## Advanced Blending
-
-XOR (only non-overlapping):
-  Math.max(Math.min(d1,d2), -Math.max(d1,d2))
-
-Chamfer Union (beveled edge):
-  var ch = (d1 + d2) * 0.707;
-  return Math.min(Math.min(d1,d2), ch);
-
-Stair-Step Union (quantized blend):
-  function opStairs(d1, d2, r, n) {
-    var s = r/n, u = d2 - r;
-    return Math.min(Math.min(d1,d2), 0.5*(u+d1+Math.abs(((u-d1)%s+s)%s*2-s)));
-  }
-
-## SDF-Based Ambient Occlusion (for colorFn)
-
-Approximate AO by sampling SDF along the surface normal:
-  // In colorFn, after computing the SDF and getting approximate normal
+## SDF-Based Ambient Occlusion (in colorFn)
+Darken crevices by sampling the SDF along the surface normal:
   var eps = 0.01;
   var nx = sdfFn(x+eps,y,z)-sdfFn(x-eps,y,z);
   var ny = sdfFn(x,y+eps,z)-sdfFn(x,y-eps,z);
@@ -100,508 +55,537 @@ Approximate AO by sampling SDF along the surface normal:
   var ao = 0;
   for (var i=1;i<=5;i++) { var h=0.02*i; ao += (h-sdfFn(x+nx*h,y+ny*h,z+nz*h))/Math.pow(2,i); }
   ao = 1 - Math.max(0, Math.min(1, ao*5));
-  // Multiply color by ao to darken crevices
+  // Multiply final color by ao
 
-## Resolution & Bounds
-- Pad bMin/bMax by ~20% beyond shape extents. Tight bounds clip geometry.
-- Resolution 64–128 for smooth surfaces. No vertex limit.
-- Higher resolution = more triangles = smoother normals and details.`,
+## Common Mistakes in Advanced SDF
+WRONG: domainTwist(x, y, z, k) then using x,z directly
+RIGHT: var tw = domainTwist(lx, ly, lz, k); use tw[0] and tw[1] as replacement for lx,lz
 
-  "natural-world": `# Natural World
+WRONG: opShell(sdSphere(x,y,z, r), t) without adjusting bMin/bMax
+RIGHT: Shell makes the shape larger by thickness — expand bMin/bMax by thickness amount
 
-## Organic Shape Construction Principles
-The key to realistic natural forms is multi-scale detail and irregularity. Never use a single primitive for a complex organic shape. Layer complexity:
+## Complete Example — Twisted Shell Column
 
-1. Base form — coarse silhouette from combined primitives
-2. Medium detail — opSmoothUnion/Subtract to sculpt secondary features
-3. Fine detail — fbm3D displacement for surface texture and irregularity
-4. Color variation — noise-driven color in colorFn to break uniformity
+\`\`\`js
+// Twisted cylindrical shell at scene center
+var cx = 0, cy = -1.0, cz = -3;
+sdfMesh(
+  function(x, y, z) {
+    var lx = x - cx, ly = y - cy, lz = z - cz;
+    // Twist the domain around Y axis
+    var tw = domainTwist(lx, ly, lz, 2.5);
+    var rx = tw[0], rz = tw[1];
+    // Base cylinder: radius 0.2, half-height 0.5
+    var cyl = sdCylinder(rx, ly, rz, 0.2, 0.5);
+    // Hollow it out into a shell
+    var shell = opShell(cyl, 0.03);
+    // Add surface texture
+    shell = opDisplace(shell, noise3D(x * 15, y * 15, z * 15) * 0.008);
+    return shell;
+  },
+  function(x, y, z) {
+    var ly = y - cy;
+    // Height-based gradient: warm at bottom, cool at top
+    var t = (ly + 0.5) / 1.0;
+    var n = noise3D(x * 8, y * 8, z * 8) * 0.06;
+    return [0.7 - t * 0.3 + n, 0.3 + t * 0.2 + n, 0.2 + t * 0.4 + n];
+  },
+  [cx - 0.4, cy - 0.65, cz - 0.4], [cx + 0.4, cy + 0.65, cz + 0.4], 100
+);
+\`\`\``,
 
-Use MANY primitives to capture the true silhouette of the object. Think about what makes it recognizable in real life and model those features. Use high resolution (80–128) and generous bounding boxes.
+  "natural-world": `KEY RULES: sdfFn(x,y,z)→number, colorFn(x,y,z)→[r,g,b]. Three separate number args, NOT arrays. Always return. Pad bMin/bMax 20%+. Dimension args = constants only.
 
-Heavy noise displacement is critical for organic realism:
+# Natural World
+
+## Organic Shape Construction
+The key to realism: multi-scale detail and irregularity. Never use a single primitive alone.
+
+Layer complexity for any organic shape:
+1. Base form — coarse silhouette from combined primitives (opSmoothUnion, k=0.05–0.15)
+2. Medium detail — opSmoothSubtract to sculpt secondary features
+3. Fine detail — opDisplace with fbm3D for surface texture
+4. Color — noise-driven colorFn to break uniformity
+
+Noise displacement is critical for organic realism:
   opDisplace(d, fbm3D(x*freq, y*freq, z*freq, octaves) * amplitude)
-- Low freq (2–4) + high amp (0.1–0.2): large lumps, overall shape irregularity
-- High freq (8–15) + low amp (0.02–0.06): bark texture, leaf roughness, skin pores
-- Stack multiple: opDisplace(opDisplace(d, low_freq), high_freq)
-
-Branching structures: use multiple sdCapsules at natural angles. Real branches taper, curve, and subdivide — use per-branch noise offsets for variation.
+- Low freq (2–4) + high amp (0.1–0.2): large-scale shape irregularity
+- High freq (8–15) + low amp (0.02–0.06): bark, skin, leaf roughness
+- Stack both: opDisplace(opDisplace(d, lowFreq), highFreq)
 
 ## Scattering & Placement
 
-Forest/field scattering:
+Random scatter with rejection:
   for (var i = 0; i < N; i++) {
     var tx = minX + random()*(maxX-minX);
     var tz = minZ + random()*(maxZ-minZ);
     var scale = 0.5 + random()*0.5;
-    // Build SDF centered at tx, groundY, tz with scale multiplier
-    // Use noise2D(tx*100, tz*100) for per-instance shape variation
+    // Position each instance at (tx, groundY, tz) with per-instance variation
   }
 
-Phyllotaxis (golden angle spiral — for flower petals, sunflower seeds, leaf arrangements):
-  var GA=2.39996; // 137.5° in radians
-  for(var i=0;i<N;i++){var a=i*GA; var r=Math.sqrt(i)*spacing; var px=cx+Math.cos(a)*r; var pz=cz+Math.sin(a)*r;}
-
-Poisson Disk (min-distance scatter — natural ground cover, trees, rocks):
-  var pts=[]; for(var i=0;i<N*10;i++){var x=minX+random()*(maxX-minX); var z=minZ+random()*(maxZ-minZ);
-    var ok=true; for(var j=0;j<pts.length;j++){var dx=x-pts[j][0],dz=z-pts[j][1]; if(dx*dx+dz*dz<minDist*minDist){ok=false;break;}}
-    if(ok)pts.push([x,z]); if(pts.length>=N)break;}
+Poisson Disk (minimum-distance scatter for natural look):
+  var pts=[]; for(var i=0;i<N*10&&pts.length<N;i++){
+    var x=minX+random()*(maxX-minX), z=minZ+random()*(maxZ-minZ);
+    var ok=true; for(var j=0;j<pts.length;j++){var dx=x-pts[j][0],dz=z-pts[j][1];if(dx*dx+dz*dz<minDist*minDist){ok=false;break;}}
+    if(ok)pts.push([x,z]);
+  }
 
 ## Terrain (grid heightfields)
 
-Rolling Hills: function(x,z){return -1.5+fbm2D(x*0.8,z*0.8)*0.5;}
+Rolling hills: function(x,z){ return -1.5 + fbm2D(x*0.8, z*0.8, 4) * 0.5; }
 
-Ridged Multifractal (sharp mountain ridges):
+Ridged mountains:
   function(x,z) {
-    var sum=0, amp=1, freq=0.5, weight=1;
-    for(var i=0;i<6;i++){
-      var n=1-Math.abs(noise2D(x*freq,z*freq));
-      n=n*n*weight; weight=Math.min(1,Math.max(0,n*2));
-      sum+=n*amp; amp*=0.5; freq*=2;
-    }
+    var sum=0,amp=1,freq=0.5,weight=1;
+    for(var i=0;i<6;i++){var n=1-Math.abs(noise2D(x*freq,z*freq)); n=n*n*weight; weight=Math.min(1,Math.max(0,n*2)); sum+=n*amp; amp*=0.5; freq*=2;}
     return -1.0+sum*0.6;
   }
 
-Terracing: var h=fbm2D(x*0.6,z*0.6); return Math.round(h*steps)/steps;
+Terracing: return Math.round(fbm2D(x*0.6,z*0.6)*steps)/steps + baseY;
 
-Island Falloff:
-  var dx=(x-cx)/rx, dz=(z-cz)/rz;
-  var falloff=1-Math.min(1,dx*dx+dz*dz);
-  return baseY+fbm2D(x*0.8,z*0.8)*0.6*falloff;
-
-Swiss Turbulence (erosion-like):
-  var sum=0,amp=1,freq=0.5,dx2=0,dz2=0;
-  for(var i=0;i<6;i++){
-    var n=noise2D((x+dx2)*freq,(z+dz2)*freq);
-    dx2+=n*amp*1.5; dz2+=n*amp*1.5;
-    sum+=(1-Math.abs(n))*amp; amp*=0.5; freq*=2;
-  }
-
-Use resolution 100–200 for terrain grids. No vertex limit.
+Island falloff:
+  var dx=(x-cx)/rx, dz=(z-cz)/rz; var falloff=1-Math.min(1,dx*dx+dz*dz);
+  return baseY + fbm2D(x*0.8,z*0.8)*0.6*falloff;
 
 ## Water
-Still water: grid at constant y=waterLevel with water color
-Waves: y = waterLevel + sum of sine terms with different frequencies and directions (Gerstner-like)
-  y = waterLevel + 0.02*Math.sin(x*3+z*2) + 0.01*Math.sin(x*5-z*3)
-Caustic floor color: var c=Math.sin(x*8)*Math.sin(z*8)*0.5+0.5; modulate blue/green by c
-
-## Snow & Ice
-Snow accumulation in colorFn: compute surface normal, if normal.y > threshold, blend toward white [0.9,0.9,0.95]
-Snow increases realism when applied as a colorFn effect rather than separate geometry.
+Still water: grid at constant y=waterLevel. Color: [0.1, 0.3, 0.6].
+Waves: y = waterLevel + 0.02*Math.sin(x*3+z*2) + 0.01*Math.sin(x*5-z*3)
 
 ## Nature Color Palette
 Bark: [0.35,0.22,0.10], Foliage: [0.15,0.40,0.08], Moss: [0.20,0.35,0.12]
-Grass: [0.20,0.45,0.10], Dry grass: [0.55,0.50,0.25], Rock: [0.45,0.42,0.38]
-Sand: [0.76,0.70,0.50], Snow: [0.90,0.90,0.95], Deep water: [0.05,0.15,0.40]
-Shallow water: [0.10,0.35,0.55], Autumn leaf: [0.70,0.35,0.08], Spring leaf: [0.30,0.55,0.15]`,
+Grass: [0.20,0.45,0.10], Rock: [0.45,0.42,0.38], Sand: [0.76,0.70,0.50]
+Snow: [0.90,0.90,0.95], Deep water: [0.05,0.15,0.40], Shallow water: [0.10,0.35,0.55]
 
-  "materials-and-color": `# Materials & Color
+## Complete Example — Mushroom
+
+\`\`\`js
+var cx = 0, cy = -1.5, cz = -3;
+sdfMesh(
+  function(x, y, z) {
+    var lx = x - cx, ly = y - cy, lz = z - cz;
+    // Stem: cylinder, radius 0.08, half-height 0.2
+    var stem = sdCylinder(lx, ly - 0.2, lz, 0.08, 0.2);
+    // Cap: flattened ellipsoid on top of stem
+    var cap = sdEllipsoid(lx, ly - 0.45, lz, 0.25, 0.12, 0.25);
+    // Smooth blend for organic joint
+    var d = opSmoothUnion(stem, cap, 0.06);
+    // Surface bumps
+    d = opDisplace(d, fbm3D(x * 12, y * 12, z * 12, 3) * 0.01);
+    return d;
+  },
+  function(x, y, z) {
+    var ly = y - cy;
+    // Height-based: pale stem → red-brown cap
+    var t = Math.max(0, Math.min(1, (ly - 0.3) / 0.2));
+    var r = 0.85 * t + 0.75 * (1 - t);
+    var g = 0.20 * t + 0.65 * (1 - t);
+    var b = 0.12 * t + 0.55 * (1 - t);
+    var n = fbm3D(x * 8, y * 8, z * 8, 3) * 0.08;
+    return [Math.min(1, r + n), Math.min(1, g + n * 0.5), Math.min(1, b + n * 0.3)];
+  },
+  [cx - 0.4, cy - 0.1, cz - 0.4], [cx + 0.4, cy + 0.7, cz + 0.4], 90
+);
+\`\`\`
+
+## Complete Example — Terrain with Biome Colors
+
+\`\`\`js
+// Rolling terrain with grass/rock coloring based on height and slope
+grid(-3, -6, 3, 0, 150, 150,
+  function(x, z) {
+    return -1.5 + fbm2D(x * 0.6, z * 0.6, 5) * 0.6;
+  },
+  function(x, z) {
+    var eps = 0.05;
+    var h = -1.5 + fbm2D(x * 0.6, z * 0.6, 5) * 0.6;
+    // Approximate slope from height differences
+    var hx = -1.5 + fbm2D((x+eps) * 0.6, z * 0.6, 5) * 0.6;
+    var hz = -1.5 + fbm2D(x * 0.6, (z+eps) * 0.6, 5) * 0.6;
+    var slope = Math.sqrt((hx-h)*(hx-h) + (hz-h)*(hz-h)) / eps;
+    var n = noise2D(x * 5, z * 5) * 0.04;
+    // Steep = rock, flat = grass
+    if (slope > 0.4) return [0.45 + n, 0.42 + n, 0.38 + n];
+    if (h > -1.0) return [0.4 + n, 0.40 + n, 0.35 + n];
+    return [0.20 + n, 0.45 + n, 0.10 + n];
+  }
+);
+\`\`\``,
+
+  "materials-and-color": `KEY RULES: sdfFn(x,y,z)→number, colorFn(x,y,z)→[r,g,b]. Three separate number args, NOT arrays. Always return. Pad bMin/bMax 20%+. Dimension args = constants only.
+
+# Materials & Color
 
 ## Material RGB Reference (values 0–1)
 
-Wood: oak [0.55,0.35,0.17], pine [0.65,0.50,0.30], walnut [0.30,0.18,0.10], birch [0.75,0.65,0.50], mahogany [0.45,0.22,0.12], cherry [0.60,0.30,0.15], driftwood [0.55,0.50,0.42]
-Stone: granite [0.55,0.52,0.50], sandstone [0.72,0.62,0.45], slate [0.35,0.38,0.40], marble [0.90,0.88,0.85], limestone [0.78,0.75,0.68], basalt [0.25,0.25,0.28], obsidian [0.05,0.05,0.08]
-Metal: iron [0.42,0.40,0.38], copper [0.72,0.45,0.20], gold [0.83,0.69,0.22], bronze [0.55,0.45,0.25], silver [0.75,0.75,0.78], rust [0.55,0.25,0.10], patina [0.30,0.65,0.50]
-Earth: dry soil [0.45,0.35,0.22], wet soil [0.25,0.18,0.10], sand [0.76,0.70,0.50], clay [0.60,0.42,0.30], gravel [0.47,0.47,0.47], mud [0.35,0.25,0.15]
-Vegetation: fresh leaf [0.18,0.42,0.10], dried [0.50,0.45,0.20], moss [0.20,0.35,0.12], autumn red [0.70,0.20,0.08], autumn gold [0.80,0.65,0.15], bark [0.35,0.22,0.10], lichen [0.55,0.60,0.30]
-Water/Sky: deep ocean [0.05,0.15,0.40], shallow [0.10,0.35,0.55], tropical [0.15,0.65,0.60], sky noon [0.53,0.81,0.92], sunset [0.95,0.55,0.25], dawn [0.90,0.60,0.45], night [0.02,0.02,0.08]
+Wood: oak [0.55,0.35,0.17], pine [0.65,0.50,0.30], walnut [0.30,0.18,0.10], birch [0.75,0.65,0.50], mahogany [0.45,0.22,0.12], cherry [0.60,0.30,0.15]
+Stone: granite [0.55,0.52,0.50], sandstone [0.72,0.62,0.45], slate [0.35,0.38,0.40], marble [0.90,0.88,0.85], basalt [0.25,0.25,0.28]
+Metal: iron [0.42,0.40,0.38], copper [0.72,0.45,0.20], gold [0.83,0.69,0.22], bronze [0.55,0.45,0.25], silver [0.75,0.75,0.78], rust [0.55,0.25,0.10]
+Earth: dry soil [0.45,0.35,0.22], wet soil [0.25,0.18,0.10], sand [0.76,0.70,0.50], clay [0.60,0.42,0.30]
+Vegetation: fresh leaf [0.18,0.42,0.10], moss [0.20,0.35,0.12], bark [0.35,0.22,0.10], autumn [0.70,0.20,0.08]
+Sky/Water: deep ocean [0.05,0.15,0.40], shallow [0.10,0.35,0.55], sky noon [0.53,0.81,0.92], sunset [0.95,0.55,0.25]
 Skin: light [0.90,0.75,0.65], medium [0.70,0.50,0.35], dark [0.40,0.25,0.15]
-Misc: bone [0.88,0.85,0.78], ivory [0.93,0.90,0.82], terracotta [0.72,0.40,0.22], brick [0.60,0.30,0.25], concrete [0.60,0.58,0.55], glass [0.85,0.90,0.92]
+Misc: bone [0.88,0.85,0.78], terracotta [0.72,0.40,0.22], brick [0.60,0.30,0.25], concrete [0.60,0.58,0.55]
 
 ## Procedural Textures (in colorFn)
 
-Marble: var v=Math.sin(x*freq+fbm3D(x*s,y*s,z*s,4)*power)*0.5+0.5; return lerp(baseColor,veinColor,v);
-  Example: var v=Math.sin(x*10+fbm3D(x*4,y*4,z*4)*3)*0.5+0.5; return[0.9-v*0.15, 0.88-v*0.15, 0.85-v*0.1];
+Marble veins:
+  var v = Math.sin(x*10 + fbm3D(x*4,y*4,z*4,4)*3) * 0.5 + 0.5;
+  return [0.9-v*0.15, 0.88-v*0.15, 0.85-v*0.1];
 
-Wood Grain: var ring=Math.sin(Math.sqrt((x-cx)*(x-cx)+(z-cz)*(z-cz))*freq+fbm3D(x*2,y*2,z*2)*warp)*0.5+0.5;
-  Example: var ring=Math.sin(Math.sqrt(x*x+z*z)*20+fbm3D(x*2,y*2,z*2)*2)*0.5+0.5; return[0.55+ring*0.1,0.35+ring*0.05,0.17-ring*0.05];
+Wood grain (concentric rings):
+  var ring = Math.sin(Math.sqrt(x*x+z*z)*20 + fbm3D(x*2,y*2,z*2,3)*2) * 0.5 + 0.5;
+  return [0.55+ring*0.1, 0.35+ring*0.05, 0.17-ring*0.05];
 
-Brick Pattern: var bx=((x/brickW)%1+1)%1, bz=((z/brickH+Math.floor(x/brickW)*0.5)%1+1)%1;
+Brick pattern:
+  var bx=((x/0.2)%1+1)%1, bz=((z/0.1+Math.floor(x/0.2)*0.5)%1+1)%1;
   var mortar=(bx<0.05||bx>0.95||bz<0.05||bz>0.95)?1:0;
   return mortar ? [0.7,0.7,0.65] : [0.6+noise2D(x*10,z*10)*0.08, 0.30, 0.25];
 
-Voronoi/Cellular: seed N points, find nearest-distance for cell patterns:
-  var seeds=[]; for(var i=0;i<20;i++) seeds.push([minX+random()*(maxX-minX), minZ+random()*(maxZ-minZ)]);
-  // In colorFn: var minD=1e10,id=0; for(var i=0;i<seeds.length;i++){var dx=x-seeds[i][0],dz=z-seeds[i][1],d=dx*dx+dz*dz;if(d<minD){minD=d;id=i;}}
-  // Use minD for edge detection (F1), or track 2nd-nearest for F2-F1 cobblestone pattern
-
 ## Coloring Strategies
 
-Height-based biome blending:
+Height-based blending (for sdfMesh colorFn):
   function ss(a,b,t){t=(t-a)/(b-a);t=t<0?0:t>1?1:t;return t*t*(3-2*t);}
-  var h=heightFn(x,z);
-  // Water → sand → grass → rock → snow with smooth transitions
-  if(h<waterLevel) return [0.1,0.3,0.6];
-  var sandT=ss(waterLevel,waterLevel+0.05,h);
-  var grassT=ss(waterLevel+0.03,waterLevel+0.15,h);
-  // Blend between material colors using sandT, grassT, etc.
+  // Use ss() to smoothly transition between materials at different heights
 
-Slope-based (approximate normal from heightFn):
-  var eps=0.01;
-  var nx=heightFn(x+eps,z)-heightFn(x-eps,z);
-  var nz=heightFn(x,z+eps)-heightFn(x,z-eps);
-  var slope=Math.sqrt(nx*nx+nz*nz);
-  // slope > 0.5: cliff/rock, slope < 0.2: grass/flat
+Multi-part coloring (different colors per SDF region):
+  var dPartA = sdSphere(...); var dPartB = sdCylinder(...);
+  if (dPartA < dPartB) return woodColor; else return metalColor;
 
-Noise variation: always add fbm3D(x*s,y*s,z*s)*0.05–0.1 to base color for natural imperfection.
-
-## Color Harmony (for multi-object scenes)
-Complementary: warm subject (orange/red) on cool background (blue/teal), or vice versa
-Analogous: stay within 30° hue range for cohesive mood (all greens, all warm tones)
-Triadic: pick 3 colors 120° apart for vibrant variety (red/blue/yellow tints)
-Earth tones: restrict to browns, greens, grays for naturalism
-Monochromatic: single hue, vary lightness/saturation for elegant simplicity
+ALWAYS add noise: return [baseR + noise3D(x*s,y*s,z*s)*0.05, ...] for natural imperfection.
 
 ## Weathering & Aging
 
-Rust: var rustMask=fbm3D(x*8,y*8,z*8,4)*0.5+0.5; if(rustMask>0.6){blend toward [0.55,0.25,0.10]}
-  Apply more on upward-facing and exposed surfaces.
-
-Moss Growth: var mossMask=fbm3D(x*6,y*6,z*6)*0.5+0.5; var upFacing=ny>0.5?1:0;
-  if(mossMask*upFacing>0.4){blend toward [0.20,0.35,0.12]}
-
-Dirt Accumulation: darken lower/concave regions. var dirt=1-ss(-1.5,-0.8,y); blend toward [0.30,0.22,0.12]
-
-Patina (copper aging): blend toward [0.30,0.65,0.50] using noise mask on exposed surfaces
-
-Paint Chipping: var chip=fbm3D(x*15,y*15,z*15,5); if(chip>0.55) show base metal color, else show paint color
+Rust: var mask=fbm3D(x*8,y*8,z*8,4)*0.5+0.5; if(mask>0.6) blend toward [0.55,0.25,0.10]
+Moss: var mask=fbm3D(x*6,y*6,z*6)*0.5+0.5; if(mask>0.5 && surfaceNormalY>0.5) blend toward [0.20,0.35,0.12]
+Patina: blend toward [0.30,0.65,0.50] using noise mask on exposed surfaces
 
 ## Math Utilities
 smoothstep: function ss(a,b,t){t=(t-a)/(b-a);t=t<0?0:t>1?1:t;return t*t*(3-2*t);}
-lerp color: function lc(a,b,t){return[a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t];}
-bias: function bias(x,b){return x/((1/b-2)*(1-x)+1);}
-gain: function gain(x,g){return x<0.5?bias(2*x,g)/2:1-bias(2-2*x,g)/2;}`,
+lerp color: function lc(a,b,t){return[a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t];}`,
 
-  "objects-and-characters": `# Objects & Characters — Construction Techniques
+  "objects-and-characters": `KEY RULES: sdfFn(x,y,z)→number, colorFn(x,y,z)→[r,g,b]. Three separate number args, NOT arrays. Always return. Pad bMin/bMax 20%+. Dimension args = constants only.
 
-## Design Philosophy
-Aim for realism and recognizability. Use your knowledge of what real objects look like. Don't simplify — use as many primitives as needed to capture the true shape. Every object should have:
-1. Accurate overall silhouette (the most important thing for recognition)
-2. Secondary features that define its character (handles, textures, joints, etc.)
-3. Surface detail via noise displacement and varied colorFn
-4. High resolution (80–128) for smooth, detailed surfaces
+# Objects & Characters — Construction Techniques
 
-## Composition Techniques
+## Design Principles
+Every object needs: (1) accurate silhouette from multiple primitives, (2) secondary features (handles, joints, textures), (3) surface detail via noise displacement, (4) high resolution (80–128).
 
-Building complex shapes from SDF primitives:
-- Start with the dominant volume, then add/subtract secondary features
-- Use opSmoothUnion with small k (0.02–0.08) for natural joints between parts
-- Use opSubtract/opSmoothSubtract for cavities, indentations, carving detail
-- Apply opDisplace with fbm3D for surface imperfection — real objects are never perfectly smooth
-- Use opRound to soften hard edges on manufactured objects
+## SDF Composition
+- Start with dominant volume, add/subtract secondary features
+- opSmoothUnion with k=0.02–0.08 for natural joints
+- opSubtract/opSmoothSubtract for cavities and carving
+- opDisplace with fbm3D for surface imperfection
+- opRound to soften hard edges on manufactured objects
 
-Multi-part color in colorFn:
-  Evaluate individual SDF distances to determine which "part" of the object a point is on:
-  var dPartA = sdSphere(...); var dPartB = sdCapsule(...);
-  if (dPartA < dPartB) return colorA; else return colorB;
-  This allows different colors/materials per region of a single sdfMesh.
+## Multi-Part Coloring
+In colorFn, evaluate individual SDF distances to determine which "part" a point is on:
+  var dWood = sdBox(lx, ly, lz, ...);
+  var dMetal = sdCylinder(lx, ly-0.3, lz, ...);
+  if (dWood < dMetal) return [0.55, 0.35, 0.17]; // wood
+  else return [0.42, 0.40, 0.38]; // metal
 
-## Symmetry & Repetition for Realism
+## Symmetry
+Mirror (bilateral — animals, vehicles):
+  var mx = domainMirror(lx);  // model one side, both render
 
-Mirror symmetry (bilateral — animals, faces, vehicles):
-  px = Math.abs(px - cx) + cx;  // mirror across center
-  Model only one side; the other renders automatically.
-
-Angular repetition (wheels, petals, gear teeth, columns):
-  var angle = Math.atan2(pz-cz, px-cx);
+Angular repetition (petals, wheels, columns):
+  var angle = Math.atan2(lz, lx);
   var repAngle = Math.PI*2/N;
   angle = ((angle % repAngle) + repAngle) % repAngle - repAngle/2;
-  var lx = Math.cos(angle) * radius, lz = Math.sin(angle) * radius;
-  // Evaluate primitive at (lx, py, lz)
+  var localR = Math.sqrt(lx*lx + lz*lz);
+  var rlx = Math.cos(angle) * localR, rlz = Math.sin(angle) * localR;
 
-Instance ID for per-copy variation:
-  var id = Math.round(angle / repAngle);
-  // Use noise2D(id*100, 0) for per-instance size/color variation
+## Hollow Objects
+Shell: opShell(solidSDF, wallThickness)
+Cut opening: opIntersect(opShell(sdSphere(lx,ly,lz, R), 0.02), sdPlane(lx,ly,lz, 0,1,0, cutY))
+For cups, bowls, vases, helmets, pipes.
 
-## Articulation & Posing
+## Lathe — Surface of Revolution
+Ideal for rotationally symmetric objects: vases, bottles, columns, bowls, chess pieces, wine glasses.
+profile = [[radius, yOffset], ...] where yOffset=0 is the BOTTOM of the shape and yOffset increases UPWARD. The shape's bottom is placed at cy. List profile points from bottom to top.
+Use 10–20+ points for smooth curves. segments = 24–48.
+Optional angleOffset (radians, default 0) rotates the whole shape around its axis. Use Math.PI/4 with segments=4 to align a square pyramid roof with axis-aligned box walls.
 
-Posing limbs/appendages: each limb is a separate SDF primitive positioned and angled independently. Use capsules for organic limbs, cylinders/boxes for rigid parts.
+For a roof/cone/pyramid: radius is LARGE at the bottom (yOffset=0) and ZERO at the top (highest yOffset).
+WRONG: [[0, 0], [0.7, 0.4]] — this makes a cone with the POINT at the bottom
+RIGHT: [[0.7, 0], [0, 0.4]] — this makes a cone with the POINT at the top (like a roof)
 
-Domain bending for curvature:
-  var c=Math.cos(k*px), s=Math.sin(k*px);
-  var by=px*s+py*c; px=px*c-py*s; py=by;
-  Produces natural curves for tails, tentacles, horns, arches.
+WRONG: lathe(cx,cy,cz, profile, 4, r,g,b) on top of a box — corners at 0°/90°/180°/270° are diamond-rotated vs the box
+RIGHT: lathe(cx,cy,cz, profile, 4, r,g,b, Math.PI/4) — angleOffset rotates corners to match box edges
 
-Domain twist for spiral features:
-  var c=Math.cos(k*py), s=Math.sin(k*py);
-  var rx=px*c-pz*s, rz=px*s+pz*c;
-  Use for drill bits, twisted columns, horns, spiral shells.
+## extrudePath — Sweep Profile Along Path
+Creates tubes, rails, wires, organic tendrils. profile = [[x,y], ...] is the 2D cross-section. path = [[x,y,z], ...] is the 3D spine. closed = true wraps the profile into a loop (tube).
 
-## Hollow & Thin-Walled Objects
-Shell: Math.abs(sdf) - wallThickness
-  For cups, bowls, helmets, pipes, lampshades, vases.
-
-Combine with opIntersect to cut openings:
-  var shell = Math.abs(sdSphere(px,py,pz, R)) - 0.02;
-  var cut = sdPlane(px,py,pz, 0,1,0, cutY);  // cut top off
-  return opIntersect(shell, cut);
-
-## Lathe for Rotational Objects
-lathe() is ideal for any object with rotational symmetry: vases, bottles, columns, bowls, chess pieces, mushrooms, wine glasses.
-Define the profile as [[radius, yOffset], ...] tracing the silhouette from bottom to top.
-Use many profile points (10–20+) for smooth curves. High segment count (24–48) for round surfaces.
+For a circular cross-section:
+  var profile = [];
+  for (var i = 0; i <= 16; i++) {
+    var a = i / 16 * Math.PI * 2;
+    profile.push([Math.cos(a) * radius, Math.sin(a) * radius]);
+  }
 
 ## Scale Reference
-Person ≈ 0.4–0.6 units tall. Tree ≈ 0.5–1.0. Building ≈ 0.8–1.5. Small object ≈ 0.1–0.3.
-Scene center: (0, -0.5, -3). Ground level: y ≈ -1.5.`,
+Person ≈ 0.4–0.6 tall. Tree ≈ 0.5–1.0. Building ≈ 0.8–1.5. Small object ≈ 0.1–0.3.
+Scene center: (0, -0.5, -3). Ground: y ≈ -1.5.
 
-  "math-and-patterns": `# Mathematical Shapes & Patterns
+## Complete Example — Table with Wood Grain
+
+\`\`\`js
+var cx = 0, cy = -0.8, cz = -3;
+sdfMesh(
+  function(x, y, z) {
+    var lx = x - cx, ly = y - cy, lz = z - cz;
+    // Tabletop: rounded box slab
+    var top = opRound(sdBox(lx, ly, lz, 0.5, 0.03, 0.3), 0.01);
+    // Four legs at corners
+    var leg1 = sdCylinder(lx - 0.4, ly + 0.38, lz - 0.22, 0.03, 0.35);
+    var leg2 = sdCylinder(lx + 0.4, ly + 0.38, lz - 0.22, 0.03, 0.35);
+    var leg3 = sdCylinder(lx - 0.4, ly + 0.38, lz + 0.22, 0.03, 0.35);
+    var leg4 = sdCylinder(lx + 0.4, ly + 0.38, lz + 0.22, 0.03, 0.35);
+    var legs = opUnion(opUnion(leg1, leg2), opUnion(leg3, leg4));
+    return opSmoothUnion(top, legs, 0.02);
+  },
+  function(x, y, z) {
+    var ring = Math.sin(Math.sqrt((x-cx)*(x-cx)+(z-cz)*(z-cz))*20
+      + fbm3D(x*3,y*3,z*3,3)*2) * 0.5 + 0.5;
+    return [0.55 + ring*0.1, 0.35 + ring*0.06, 0.17 - ring*0.04];
+  },
+  [cx-0.65, cy-0.85, cz-0.45], [cx+0.65, cy+0.1, cz+0.45], 90
+);
+\`\`\`
+
+## Complete Example — Vase using Lathe
+
+\`\`\`js
+// Classic vase at scene center using lathe (surface of revolution)
+lathe(0, -1.5, -3,
+  [
+    [0.00, 0.00],  // bottom center point
+    [0.12, 0.01],  // base edge
+    [0.14, 0.05],  // base flare
+    [0.10, 0.15],  // narrowing above base
+    [0.08, 0.30],  // narrow waist
+    [0.09, 0.40],  // slight bulge
+    [0.15, 0.55],  // widening body
+    [0.20, 0.70],  // max width
+    [0.18, 0.80],  // tapering toward neck
+    [0.12, 0.88],  // neck
+    [0.10, 0.92],  // neck narrowest
+    [0.13, 0.95],  // lip flare
+    [0.14, 0.97],  // lip top
+    [0.12, 0.98],  // lip inner edge
+    [0.00, 0.98],  // top center (closes the top)
+  ],
+  32, 0.72, 0.40, 0.22  // terracotta color
+);
+\`\`\`
+
+## Complete Example — Helix Tube using extrudePath
+
+\`\`\`js
+// Helical tube winding upward at scene center
+var profile = [];
+var tubeR = 0.03;
+for (var i = 0; i <= 12; i++) {
+  var a = i / 12 * Math.PI * 2;
+  profile.push([Math.cos(a) * tubeR, Math.sin(a) * tubeR]);
+}
+var path = [];
+var helixR = 0.3, pitch = 0.08;
+for (var t = 0; t < 150; t++) {
+  var a = t / 150 * Math.PI * 8; // 4 full turns
+  path.push([
+    Math.cos(a) * helixR,
+    -1.5 + t * pitch / 150 * 4,  // rise from ground
+    Math.sin(a) * helixR - 3     // centered at z=-3
+  ]);
+}
+extrudePath(profile, path, true, 0.72, 0.45, 0.20);
+\`\`\``,
+
+  "math-and-patterns": `KEY RULES: sdfFn(x,y,z)→number, colorFn(x,y,z)→[r,g,b]. Three separate number args, NOT arrays. Always return. Pad bMin/bMax 20%+. Dimension args = constants only.
+
+# Mathematical Shapes & Patterns
 
 ## Implicit Surfaces (as sdfFn for sdfMesh)
 
 Gyroid — triply periodic minimal surface:
   function(x,y,z) {
-    var s = 6;  // scale (controls cell size — higher = more cells)
+    var s = 6;
     return Math.sin(x*s)*Math.cos(y*s) + Math.sin(y*s)*Math.cos(z*s) + Math.sin(z*s)*Math.cos(x*s);
   }
-  Shell version: Math.abs(gyroid) - thickness (0.1–0.3)
-  Color by position: var t=y*0.5+0.5; return[0.2+t*0.3, 0.4+t*0.2, 0.6-t*0.2];
+  Shell version: wrap in opShell(d, 0.15). Color by position for gradient effect.
 
-Schwarz P Surface — another TPMS:
+Schwarz P:
   function(x,y,z) { var s=6; return Math.cos(x*s)+Math.cos(y*s)+Math.cos(z*s); }
-  Shell: Math.abs(d) - 0.2
 
-Schwarz D (Diamond):
-  function(x,y,z) { var s=6; return Math.sin(x*s)*Math.sin(y*s)*Math.sin(z*s) + Math.sin(x*s)*Math.cos(y*s)*Math.cos(z*s) + Math.cos(x*s)*Math.sin(y*s)*Math.cos(z*s) + Math.cos(x*s)*Math.cos(y*s)*Math.sin(z*s); }
+## Parametric Curves (via extrudePath)
 
-## Parametric Curves (via extrudePath or emit)
-
-Trefoil Knot — a (2,3)-torus knot:
+Trefoil Knot:
   var path=[]; for(var t=0;t<200;t++){var a=t/200*Math.PI*2;
-    path.push([Math.sin(a)+2*Math.sin(2*a), Math.cos(a)-2*Math.cos(2*a), -Math.sin(3*a)]);
+    path.push([(Math.sin(a)+2*Math.sin(2*a))*0.15, (Math.cos(a)-2*Math.cos(2*a))*0.15-0.5, -Math.sin(3*a)*0.15-3]);
   }
-  // Scale and offset: multiply coords by 0.15, offset by [0,-0.5,-3]
-  // Use extrudePath with circular profile for solid knot
+  // Pair with circular profile (radius 0.03–0.05) and extrudePath(profile, path, true, r,g,b)
 
 General Torus Knot (p,q):
   var R=0.3, r=0.1;
   for(var t=0;t<300;t++){var a=t/300*Math.PI*2;
-    var x=(R+r*Math.cos(q*a))*Math.cos(p*a);
-    var y=r*Math.sin(q*a);
-    var z=(R+r*Math.cos(q*a))*Math.sin(p*a);
-    path.push([x,y-0.5,z-3]);
+    path.push([(R+r*Math.cos(q*a))*Math.cos(p*a), r*Math.sin(q*a)-0.5, (R+r*Math.cos(q*a))*Math.sin(p*a)-3]);
   }
-
-Möbius Strip (emit as quad grid):
-  for(var u=0;u<200;u++){for(var v=0;v<20;v++){
-    var a=u/200*Math.PI*2, s=(v/20-0.5)*0.15;
-    var x=(0.3+s*Math.cos(a/2))*Math.cos(a);
-    var y=(0.3+s*Math.cos(a/2))*Math.sin(a);
-    var z=s*Math.sin(a/2);
-    emit(x, y-0.5, z-3, 0.6,0.4,0.8, 0.01);
-  }}
-  Or use emitQuad connecting adjacent grid points for a solid strip.
-
-Lissajous Curves:
-  for(var t=0;t<1000;t++){var s=t/1000*Math.PI*2*4;
-    var x=Math.sin(3*s)*0.3; var y=Math.sin(4*s+0.5)*0.3; var z=Math.sin(5*s)*0.3;
-    emit(x, y-0.5, z-3, 0.8,0.4,0.2, 0.015);
-  }
-  Vary the frequency ratios (3,4,5) for different patterns.
 
 ## Spirals
 
-Helix: x=R*cos(t), y=pitch*t, z=R*sin(t) — use as extrudePath spine
-  var path=[]; for(var t=0;t<100;t++){var s=t/100*Math.PI*6;
-    path.push([0.2*Math.cos(s), s*0.05-0.8, 0.2*Math.sin(s)-3]);
-  }
+Helix: path with x=R*cos(t), y=pitch*t, z=R*sin(t). Use as extrudePath spine.
 
-Archimedean Spiral (flat): r = a + b*theta
-  for(var t=0;t<500;t++){var a=t/500*Math.PI*8; var r=0.05+a*0.03;
-    emit(Math.cos(a)*r, -1, Math.sin(a)*r-3, 0.5,0.7,0.3, 0.015);}
-
-Logarithmic Spiral (nautilus): r = a * exp(b*theta)
-  for(var t=0;t<500;t++){var a=t/500*Math.PI*6; var r=0.05*Math.exp(0.1*a);
-    emit(Math.cos(a)*r, -1, Math.sin(a)*r-3, 0.8,0.7,0.5, 0.015);}
-
-Golden Spiral: logarithmic spiral with b ≈ 0.3063 (growth factor per quarter turn = golden ratio)
+Logarithmic Spiral (nautilus): r = a * exp(b*theta), b ≈ 0.3063 for golden spiral.
 
 ## Voronoi / Cellular Patterns
 
-Implementation (2D, for heightFn or colorFn):
-  // Pre-generate seed points
-  var seeds=[]; for(var i=0;i<N;i++) seeds.push([minX+random()*(maxX-minX), minZ+random()*(maxZ-minZ), random()]);
-  // In function: find nearest seed
-  var minD=1e10, minD2=1e10, id=0;
-  for(var i=0;i<seeds.length;i++){
-    var dx=x-seeds[i][0], dz=z-seeds[i][1];
-    var d=Math.sqrt(dx*dx+dz*dz);
-    if(d<minD){minD2=minD; minD=d; id=i;} else if(d<minD2){minD2=d;}
-  }
-  // F1 = minD (distance to nearest — smooth cells)
-  // F2-F1 = minD2-minD (cell edges — cobblestone, cracked earth)
-  // id = cell index (for per-cell random color)
-
-3D Voronoi: same pattern but with y coordinate included
+2D Voronoi (for heightFn or colorFn):
+  var seeds=[]; for(var i=0;i<N;i++) seeds.push([minX+random()*(maxX-minX), minZ+random()*(maxZ-minZ)]);
+  // In function: find nearest seed distance
+  var minD=1e10, minD2=1e10;
+  for(var i=0;i<seeds.length;i++){var dx=x-seeds[i][0],dz=z-seeds[i][1];var d=Math.sqrt(dx*dx+dz*dz);
+    if(d<minD){minD2=minD;minD=d;}else if(d<minD2){minD2=d;}}
+  // F1=minD (smooth cells), F2-F1=minD2-minD (cell edges, cobblestone)
 
 ## Coordinate Transforms
 
 Polar: var r=Math.sqrt(x*x+z*z); var theta=Math.atan2(z,x);
-  Use for radial patterns, angular repetition, distance-from-center falloff
-
 Spherical: var r=Math.sqrt(x*x+y*y+z*z); var phi=Math.acos(y/r); var theta=Math.atan2(z,x);
-  Use for globe patterns, latitude/longitude effects
-
-Back to Cartesian: x=r*Math.sin(phi)*Math.cos(theta); y=r*Math.cos(phi); z=r*Math.sin(phi)*Math.sin(theta);
 
 ## Bezier Curves
-
-Quadratic: function bezier2(t,p0,p1,p2){var u=1-t; return u*u*p0+2*u*t*p1+t*t*p2;}
-Cubic: function bezier3(t,p0,p1,p2,p3){var u=1-t; return u*u*u*p0+3*u*u*t*p1+3*u*t*t*p2+t*t*t*p3;}
-Use for smooth height curves, path generation, or profile shapes.
+Quadratic: function b2(t,p0,p1,p2){var u=1-t; return u*u*p0+2*u*t*p1+t*t*p2;}
+Cubic: function b3(t,p0,p1,p2,p3){var u=1-t; return u*u*u*p0+3*u*u*t*p1+3*u*t*t*p2+t*t*t*p3;}
 
 ## Fractals
 
-Sierpinski Tetrahedron (emit points):
-  function sierpinski(x,y,z,depth){
-    if(depth<=0){emit(x,y,z,0.8,0.3,0.3,0.01);return;}
-    var h=Math.pow(0.5,depth);
-    sierpinski(x-h,y-h,z-h,depth-1);
-    sierpinski(x+h,y-h,z+h,depth-1);
-    sierpinski(x-h,y-h,z+h,depth-1);
-    sierpinski(x,y+h,z,depth-1);
-  }
-
-Menger Sponge (SDF, iterative):
+Menger Sponge (SDF):
   function(x,y,z) {
     var d = sdBox(x,y,z, 0.5,0.5,0.5);
     var s = 1;
     for(var i=0;i<4;i++){
-      var a=((x*s%3)+3)%3; var b=((y*s%3)+3)%3; var c=((z*s%3)+3)%3;
+      var a=((x*s%3)+3)%3, b=((y*s%3)+3)%3, c=((z*s%3)+3)%3;
       s*=3; var da=Math.min(a,3-a), db=Math.min(b,3-b), dc=Math.min(c,3-c);
-      var cross=Math.min(Math.min(da*da+db*db, da*da+dc*dc), db*db+dc*dc);
-      d=Math.max(d, -(Math.sqrt(cross)-1)/s);
+      d=Math.max(d, -(Math.sqrt(Math.min(da*da+db*db, Math.min(da*da+dc*dc, db*db+dc*dc)))-1)/s);
     }
     return d;
-  }`,
-
-  "atmosphere-and-fx": `# Atmosphere & Effects
-
-## Particle Systems (emit)
-emit() renders as flat circular dots. ONLY use for particles, never for solid surfaces. Use sdfMesh for solid objects.
-No point limit — buffers grow dynamically. Use generous counts for rich effects.
-
-## Rain
-  for(var i=0;i<50000;i++){
-    var x=(random()-0.5)*6, y=random()*3-1.5, z=-1-random()*5;
-    emit(x, y, z, 0.6,0.7,0.85, 0.012);
   }
 
-## Snow
-  for(var i=0;i<40000;i++){
-    var x=(random()-0.5)*6, y=random()*3-1.5, z=-1-random()*5;
-    var drift=fbm2D(x*2+y,y*0.5)*0.3;  // wind drift
-    emit(x+drift, y, z, 0.9,0.92,0.95, 0.018);
+## Complete Example — Twisted Torus with Iridescent Color
+
+\`\`\`js
+var cx = 0, cy = -0.5, cz = -3;
+sdfMesh(
+  function(x, y, z) {
+    var lx = x - cx, ly = y - cy, lz = z - cz;
+    // Twist the domain around Y axis
+    var tw = domainTwist(lx, ly, lz, 3.0);
+    var rx = tw[0], rz = tw[1];
+    // Torus: major radius 0.5, minor radius 0.15
+    return sdTorus(rx, ly, rz, 0.5, 0.15);
+  },
+  function(x, y, z) {
+    var lx = x - cx, lz = z - cz;
+    var angle = Math.atan2(lz, lx);
+    // Rainbow hue shift based on angle
+    var t = angle / (Math.PI * 2) + 0.5;
+    var r = Math.sin(t * Math.PI * 2) * 0.3 + 0.5;
+    var g = Math.sin(t * Math.PI * 2 + 2.094) * 0.3 + 0.5;
+    var b = Math.sin(t * Math.PI * 2 + 4.189) * 0.3 + 0.5;
+    var n = noise3D(x * 10, y * 10, z * 10) * 0.05;
+    return [Math.min(1, r + n), Math.min(1, g + n), Math.min(1, b + n)];
+  },
+  [cx - 0.85, cy - 0.25, cz - 0.85], [cx + 0.85, cy + 0.25, cz + 0.85], 100
+);
+\`\`\`
+
+## Complete Example — Trefoil Knot using extrudePath
+
+\`\`\`js
+// Circular cross-section for the tube
+var profile = [];
+for (var i = 0; i <= 16; i++) {
+  var a = i / 16 * Math.PI * 2;
+  profile.push([Math.cos(a) * 0.04, Math.sin(a) * 0.04]);
+}
+// Trefoil knot path
+var path = [];
+for (var t = 0; t < 250; t++) {
+  var a = t / 250 * Math.PI * 2;
+  path.push([
+    (Math.sin(a) + 2 * Math.sin(2 * a)) * 0.18,
+    (Math.cos(a) - 2 * Math.cos(2 * a)) * 0.18 - 0.5,
+    -Math.sin(3 * a) * 0.18 - 3
+  ]);
+}
+extrudePath(profile, path, true, 0.83, 0.69, 0.22);
+\`\`\``,
+
+  "atmosphere-and-fx": `KEY RULES: sdfFn(x,y,z)→number, colorFn(x,y,z)→[r,g,b]. Three separate number args, NOT arrays. Always return. Pad bMin/bMax 20%+. Dimension args = constants only.
+
+# Atmosphere & Effects
+
+## Volumetric Clouds (SDF-based)
+Build clouds with multiple smooth-unioned spheres + fbm3D displacement:
+  function cloudSDF(x,y,z) {
+    var d = sdSphere(x, y, z, 0.3);
+    d = opSmoothUnion(d, sdSphere(x-0.2, y+0.05, z+0.1, 0.25), 0.1);
+    d = opSmoothUnion(d, sdSphere(x+0.25, y-0.03, z-0.05, 0.2), 0.1);
+    d = opDisplace(d, fbm3D(x*4, y*4, z*4, 4) * 0.08);
+    return d;
   }
+  Color: near-white [0.92, 0.93, 0.95] with noise variation.
 
-## Fire (two-zone: hot core + cool envelope)
-  var fx=0,fy=-1,fz=-3;
-  for(var i=0;i<40000;i++){
-    var t=random(), spread=t*0.3;
-    var x=fx+(random()-0.5)*spread, y=fy+t*0.8, z=fz+(random()-0.5)*spread;
-    var core=1-Math.sqrt((x-fx)*(x-fx)+(z-fz)*(z-fz))*5;
-    core=Math.max(0,Math.min(1,core));
-    var r=1.0, g=0.9*core+0.2*(1-t)*(1-core), b=0.7*core*core;
-    emit(x,y,z, r,Math.max(0,g),Math.max(0,b), 0.02);
-  }
+## Flat Cloud Layer
+grid at high Y with fbm2D density threshold:
+  grid(-3,-6, 3,0, 80,80,
+    function(x,z) { var d=fbm2D(x*0.5,z*0.5,4); return d>0.2 ? 1.0 : -100; },
+    function(x,z) { return [0.9, 0.91, 0.93]; }
+  );
 
-## Smoke / Fog
-  var sx=0,sy=-0.5,sz=-3;
-  for(var i=0;i<30000;i++){
-    var t=random(), spread=t*0.6;
-    var x=sx+(random()-0.5)*spread, y=sy+t*1.5, z=sz+(random()-0.5)*spread;
-    var g=0.5+t*0.3, a=1-t*0.5;
-    emit(x,y,z, g,g,g*0.95, 0.02+t*0.04);
-  }
+## Scene Composition
 
-## Sparks
-  var ox=0,oy=-1,oz=-3;
-  for(var i=0;i<20000;i++){
-    var angle=random()*Math.PI*2, speed=0.5+random()*1.5, t=random();
-    var x=ox+Math.cos(angle)*speed*t, y=oy+t*speed*0.8-t*t*2;
-    var z=oz+Math.sin(angle)*speed*t*0.3;
-    emit(x,y,z, 1,0.6*(1-t),0.1*(1-t), 0.012);
-  }
+Ground plane — always include to anchor objects:
+  grid(-3,-6, 3,0, 20,20, function(){return -1.5;}, function(){return[0.35,0.32,0.28];});
 
-## Fireworks (radial burst with gravity)
-  var bx=0,by=0,bz=-3;
-  for(var i=0;i<15000;i++){
-    var theta=random()*Math.PI*2, phi=random()*Math.PI;
-    var speed=0.3+random()*0.5, t=random();
-    var x=bx+Math.sin(phi)*Math.cos(theta)*speed*t;
-    var y=by+Math.cos(phi)*speed*t-0.5*t*t;  // gravity
-    var z=bz+Math.sin(phi)*Math.sin(theta)*speed*t;
-    var bright=1-t;
-    emit(x,y,z, 1*bright,0.3*bright,0.5*bright, 0.015);
-  }
-
-## Waterfall
-  var wx=0,wy=0,wz=-3, wh=1.0;
-  for(var i=0;i<30000;i++){
-    var t=random(); // 0=top, 1=bottom
-    var x=wx+(random()-0.5)*0.15;
-    var y=wy-t*wh;
-    var z=wz+(random()-0.5)*0.05;
-    emit(x,y,z, 0.7,0.8,0.9, 0.015);
-  }
-  // Mist at base
-  for(var i=0;i<10000;i++){
-    var x=wx+(random()-0.5)*0.6, y=wy-wh+(random()-0.5)*0.2;
-    var z=wz+(random()-0.5)*0.3;
-    emit(x,y,z, 0.85,0.88,0.92, 0.025);
-  }
-
-## Stars / Starfield
-  for(var i=0;i<15000;i++){
-    var x=(random()-0.5)*8, y=random()*2+0.5, z=-1-random()*5;
-    var b=0.3+random()*0.7;
-    var tint=random(); // warm/cool variation
-    emit(x,y,z, b+tint*0.1,b,b+0.1*(1-tint), 0.008+random()*0.012);
-  }
-
-## Dust Motes / Pollen
-  for(var i=0;i<8000;i++){
-    var x=(random()-0.5)*4, y=random()*2-1, z=-1-random()*4;
-    emit(x,y,z, 0.85,0.80,0.60, 0.01+random()*0.01);
-  }
-
-## Clouds
-Volumetric approach: sdfMesh with multiple smooth-unioned spheres + heavy fbm3D displacement for billowy shape.
-Flat cloud layer: grid at high Y with fbm2D density threshold — return very low Y for thin regions to hide them.
-Color: near-white with subtle noise variation for depth.
-
-## Scene Composition & Framing
-
-Ground Plane: always include a floor to ground the scene:
-  grid(-3,-6,3,0, 20,20, function(){return -1.5;}, function(){return[0.35,0.32,0.28];});
-
-Three-Layer Depth:
-  - Foreground (Z=-1 to -2): small detail, particles close to camera
-  - Midground (Z=-2.5 to -4): main subject (the object/scene the user asked for)
-  - Background (Z=-4 to -6): distant elements, atmosphere, sky particles
-
-Scale Reference: a person ≈ 0.4 units tall. A tree ≈ 0.5–1.0 units. A building ≈ 0.8–1.5 units.
-
-Camera: at origin looking down -Z. Objects at center of scene (0, -0.5, -3) are well-framed.
+Three-layer depth composition:
+  - Foreground (Z=-1 to -2): small details close to camera
+  - Midground (Z=-2.5 to -4): main subject
+  - Background (Z=-4 to -6): distant elements, atmosphere
 
 ## Lighting Tricks (in colorFn)
-Ambient Y-gradient: vary warmth by height:
-  var warmth=0.05*(y+1.5); return[baseR+warmth, baseG, baseB-warmth*0.5];
 
-Fake shadow on ground: in ground grid colorFn, darken under objects:
+Height warmth gradient:
+  var warmth = 0.05 * (y + 1.5);
+  return [baseR + warmth, baseG, baseB - warmth * 0.5];
+
+Fake ground shadow:
   var dx=x-objX, dz=z-objZ, dist=Math.sqrt(dx*dx+dz*dz);
-  var shadow=dist<shadowR ? 0.7+0.3*(dist/shadowR) : 1.0;
-  return[baseR*shadow, baseG*shadow, baseB*shadow];
+  var shadow = dist < shadowR ? 0.7 + 0.3*(dist/shadowR) : 1.0;
+  return [baseR*shadow, baseG*shadow, baseB*shadow];
 
-Rim light approximation: in sdfMesh colorFn, boost brightness where normal faces toward camera (+Z):
-  // nz is the Z component of the surface normal
-  var rim = Math.max(0, nz) * 0.2;
-  return [baseR+rim, baseG+rim, baseB+rim];
+## Mesh-Based Particles
 
-## Density & Size Reference
-- Dust/stars: 0.008–0.012 size, 5k–15k points
-- Rain/snow: 0.012–0.020 size, 30k–50k points
-- Smoke/fire: 0.020–0.050 size, 25k–40k points
-- Sparks: 0.010–0.015 size, 15k–25k points
-- More points = richer effect. Don't hold back.`,
+Rain (vertical quads):
+  for(var i=0;i<5000;i++){
+    var x=(random()-0.5)*6, y=random()*3-1.5, z=-1-random()*5;
+    var h=0.03+random()*0.02;
+    emitQuad(x-0.002,y,z, x+0.002,y,z, x+0.002,y+h,z, x-0.002,y+h,z, 0.6,0.7,0.85);
+  }
+
+Snow (tiny quads):
+  for(var i=0;i<3000;i++){
+    var x=(random()-0.5)*6, y=random()*3-1.5, z=-1-random()*5;
+    var s=0.008+random()*0.008;
+    emitQuad(x-s,y,z, x+s,y,z, x+s,y+s,z, x-s,y+s,z, 0.9,0.92,0.95);
+  }
+
+Falling leaves (angled, colored):
+  for(var i=0;i<2000;i++){
+    var x=(random()-0.5)*4, y=random()*3-1.5, z=-1-random()*4;
+    var s=0.015+random()*0.01;
+    var angle=random()*Math.PI, dx=Math.cos(angle)*s, dy=Math.sin(angle)*s;
+    var t=random();
+    emitQuad(x-dx,y-dy,z, x+dx,y-dy,z, x+dx,y+dy,z, x-dx,y+dy,z, 0.5+t*0.3,0.3+t*0.2,0.05);
+  }`,
 };

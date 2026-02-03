@@ -1,13 +1,7 @@
-import { useAtom } from "jotai";
 import { Eye, EyeOff, Settings } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
-import { renderModeAtom } from "@/atoms/renderMode";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
-import {
-  NativeSelect,
-  NativeSelectOption,
-} from "@/components/ui/native-select";
 import {
   type AIProvider,
   type AISettings,
@@ -92,7 +86,6 @@ function KeyRow({
 export function SettingsDialog() {
   const [open, setOpen] = useState(false);
   const [settings, setSettings] = useState<AISettings>(loadSettings);
-  const [renderMode, setRenderMode] = useAtom(renderModeAtom);
 
   const handleOpen = useCallback((nextOpen: boolean) => {
     if (nextOpen) {
@@ -134,37 +127,6 @@ export function SettingsDialog() {
       </DialogTrigger>
 
       <DialogContent showCloseButton={false} className="p-0 gap-0 sm:max-w-sm">
-        {/* Display section */}
-        <div className="px-4 pt-4 pb-3">
-          <div className="text-[10px] tracking-[0.1em] text-foreground/30">
-            Display
-          </div>
-        </div>
-        <div className="h-px bg-foreground/[0.06]" />
-        <div className="px-3 py-1">
-          <div className="flex items-center justify-between py-2.5 px-3 -mx-3 transition-colors hover:bg-foreground/[0.02]">
-            <div className="grid gap-0.5">
-              <span className="text-[11px] font-medium text-foreground/80">
-                Render mode
-              </span>
-              <span className="text-[9px] text-foreground/30">
-                {renderMode === "ascii" ? "ASCII art" : "3D WebGL"}
-              </span>
-            </div>
-            <NativeSelect
-              value={renderMode}
-              onChange={(e) =>
-                setRenderMode(e.target.value as "ascii" | "webgl")
-              }
-              className="w-auto text-[11px]"
-            >
-              <NativeSelectOption value="ascii">ASCII</NativeSelectOption>
-              <NativeSelectOption value="webgl">WebGL</NativeSelectOption>
-            </NativeSelect>
-          </div>
-        </div>
-        <div className="h-px bg-foreground/[0.06]" />
-
         {/* API Keys header */}
         <div className="px-4 pt-4 pb-3">
           <div className="flex items-center justify-between">

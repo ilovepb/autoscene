@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-autoscene is a React + TypeScript + Vite web app that converts 2D images into interactive 3D ASCII art with an AI chat sidebar for procedural scene generation. It uses browser-based depth estimation (Transformers.js) to create depth maps, backprojects them into 3D point clouds via Three.js, and renders output as real-time ASCII art at 60fps.
+autoscene is a React + TypeScript + Vite web app for AI-powered 3D scene generation. Users describe scenes via a chat interface, and an LLM generates procedural code that creates shaded mesh geometry rendered in real-time via Three.js WebGL. The app uses SDF (Signed Distance Functions) with marching cubes for organic shapes, plus grid heightfields, lathe, and extrusion for other geometry. Scenes can be exported as glTF (.glb) files.
 
 ## Commands
 
@@ -30,48 +30,47 @@ Key enforced rules:
 
 ## Architecture
 
-**App state machine:** `upload` → `loading` → `viewing` | `error`
+**App state machine:** `chat` → `viewing` | `error`
 - Defined as a discriminated union `AppState` in `App.tsx`
-- Phase transitions happen via `setState` in `handleFile` callback
+- `chat` phase shows centered chat with prompt input; first message transitions to `viewing`
+- `viewing` phase shows 3D viewport with chat sidebar
 
-**Data flow:** Image → depth estimation (WebGPU/WASM) → point cloud → Three.js WebGL → ASCII pixel conversion → `<pre>` display
-
-**AI chat flow:** User message → `POST /api/chat` → Cerebras LLM streams response → tool call `generate_3d_points` → code executed in Web Worker sandbox → points added as layer to Three.js scene
+**AI chat flow:** User message → `POST /api/chat` → LLM streams response → tool call `generate_3d_points` → code AST-validated → executed in Web Worker sandbox → mesh output validated → layer added to Three.js scene
 
 ### `src/lib/` — Core logic
-- `depth.ts` — Loads `depth-anything-v2-small` ONNX model via `@huggingface/transformers`, runs monocular depth estimation
-- `pointcloud.ts` — Backprojects depth map to 3D positions using pinhole camera model (~60° FOV)
-- `scene.ts` — Three.js scene setup with OrbitControls; exports `SceneHandle` interface for imperative control; supports points, mesh, and ASCII render modes; `dispose()` cleans up all GPU resources
-- `meshBuilder.ts` — Builds triangle mesh from grid-structured depth clouds with depth discontinuity filtering
-- `delaunayMesh.ts` — Delaunay triangulation for unstructured procedural point clouds
-- `ascii.ts` — Reads WebGL framebuffer at 160x90, maps luminance to ASCII character ramp
-- `procedural/engine.ts` — Executes user-generated JS in a Web Worker sandbox with 30s timeout; supports `emit()`, `emitTriangle()`, `emitQuad()`, noise functions, seeded `random()`; no hard limits on points or mesh vertices (buffers grow dynamically). Includes shape primitives: `box(cx,cy,cz, sx,sy,sz, r,g,b)`, `extrudePath(profile, path, closed, r,g,b)`, `grid(x0,z0, x1,z1, resX,resZ, heightFn, colorFn)`. Also includes SDF-based organic shape system: SDF primitives (`sdSphere`, `sdBox`, `sdCapsule`, `sdTorus`, `sdCone`, `sdPlane`, `sdCylinder`), SDF operators (`opUnion`, `opSubtract`, `opIntersect`, `opSmoothUnion`, `opSmoothSubtract`, `opSmoothIntersect`, `opRound`, `opDisplace`), `sdfMesh(sdfFn, colorFn, bMin, bMax, resolution)` for marching cubes iso-surface extraction with smooth normals from SDF gradients, and `lathe(cx,cy,cz, profile, segments, r,g,b)` for surface-of-revolution shapes
+- `scene.ts` — Three.js scene setup with OrbitControls, hemisphere + directional lighting, MeshStandardMaterial for layers; exports `SceneHandle` interface for imperative control; `dispose()` cleans up all GPU resources
+- `procedural/engine.ts` — Executes user-generated JS in a Web Worker sandbox with 300s timeout; mesh-only output (`emitTriangle()`, `emitQuad()`), no point particles; noise functions, seeded `random()`; buffers grow dynamically. Includes shape primitives: `box`, `extrudePath`, `grid`, `lathe`. SDF system: primitives (`sdSphere`, `sdBox`, `sdCapsule`, `sdTorus`, `sdCone`, `sdPlane`, `sdCylinder`, `sdEllipsoid`, `sdOctahedron`, `sdHexPrism`), operators (`opUnion`, `opSubtract`, `opIntersect`, `opSmoothUnion/Subtract/Intersect`, `opRound`, `opDisplace`, `opXOR`, `opChamfer`, `opStairs`, `opShell`, `opOnion`), domain ops (`domainMirror`, `domainRepeat`, `domainTwist`, `domainBend`), and `sdfMesh()` for marching cubes iso-surface extraction with smooth normals
+- `sandbox/validate.ts` — AST validation using `acorn`; blocks dangerous APIs (fetch, eval, Worker, import, etc.); enforces max nesting depth
+- `sandbox/outputValidation.ts` — Mesh output validation: vertex count limits (warn 100k, error 500k), NaN/Infinity detection, bounds check, degenerate triangle detection
+- `export.ts` — glTF/GLB export using Three.js GLTFExporter; downloads .glb file to user's device
 
 ### `src/components/` — UI
 - `App.tsx` — Root component with state machine, wraps everything in `JotaiProvider` + `ThemeProvider`
-- `UploadZone.tsx` — File upload drag-and-drop UI
-- `AsciiViewer.tsx` — Three.js scene with hidden WebGL canvas + ASCII `<pre>` output; manages animation loop via `requestAnimationFrame`
-- `ChatSidebar.tsx` — AI chat panel using `useChat` from `@ai-sdk/react`; handles tool execution for `generate_3d_points`
-- `LoadingState.tsx` — Progress indicator during model loading/inference
-- `ModeToggle.tsx` — Light/dark/system theme toggle
-- `SceneOverlay.tsx` — HUD overlay on the 3D scene (FPS counter, controls)
+- `CenteredChat.tsx` — Initial chat view with centered prompt input (empty state) or scrollable messages
+- `SceneViewer.tsx` — Three.js WebGL viewport with animation loop, FPS tracking, resize handling, WASD keyboard controls
+- `ChatSidebar.tsx` — AI chat panel in viewing mode
+- `ChatMessageParts.tsx` — Renders chat message parts (text, reasoning, tool calls)
+- `SceneOverlay.tsx` — HUD overlay on the 3D scene (FPS counter, controls help, GLB export button, settings)
+- `SettingsDialog.tsx` — API key configuration dialog
 - `ui/` — shadcn/ui primitives (button, card, dialog, etc.)
 - `ai-elements/` — AI SDK UI components from `@ai-elements` registry
 
 ### `src/atoms/` — Jotai atoms
 - `fps.ts` — FPS counter atom, updated every 500ms from animation loop
-- `renderMode.ts` — Render mode atom (`"ascii" | "points" | "mesh"`), persisted to localStorage `autoscene-render-mode`
+
+### `src/hooks/`
+- `useChatManager.ts` — Chat state management via `useChat` from `@ai-sdk/react`; handles tool execution for `generate_3d_points`, `remove_layer`, `clear_all_layers`; manages pending layers and scene bounds
 
 ### `src/providers/`
 - `ThemeProvider.tsx` — React context for theme (`dark`/`light`/`system`); persists to localStorage key `autoscene-theme`
 
 ### `api/` — Serverless API (Vercel functions + Vite SSR in dev)
-- `chat.ts` — AI chat handler via AI SDK `streamText`; tools include `load_skills` (server-executed, returns skill references), `generate_3d_points`, `image_to_3d`, layer management, and point deletion. Exports `handleChatRequest` (used by Vite dev middleware) and default `handler` (used by Vercel).
-- `skills.ts` — 6 comprehensive knowledge-domain skills (`advanced-sdf`, `natural-world`, `materials-and-color`, `objects-and-characters`, `math-and-patterns`, `atmosphere-and-fx`) loaded by the LLM via `load_skills` tool before generating code
+- `chat.ts` — AI chat handler via AI SDK `streamText`; tools: `load_skills` (server-executed), `generate_3d_points`, `remove_layer`, `clear_all_layers`. System prompt describes SDF-first mesh workflow, coordinate system, and API reference.
+- `_skills.ts` — 6 comprehensive knowledge-domain skills (`advanced-sdf`, `natural-world`, `materials-and-color`, `objects-and-characters`, `math-and-patterns`, `atmosphere-and-fx`) loaded by the LLM via `load_skills` tool before generating code
 
 ## Environment Variables
 
-- `CEREBRAS_API_KEY` — Required for AI chat. Also overridable per-request via `x-api-key` header (stored client-side in localStorage `autoscene-api-key`)
+- API keys are configured per-provider in the Settings dialog, stored in localStorage (`autoscene-settings`), and sent per-request via headers (`x-api-key`, `x-provider`, `x-model`).
 
 ## Tech Stack
 
@@ -80,10 +79,10 @@ Key enforced rules:
 - **shadcn/ui** (base-lyra style) + **@ai-elements** registry — config in `components.json`
 - **Biome** — linter/formatter
 - **Jotai** — atomic state management
-- **AI SDK** (`ai`) + **Cerebras** (`@ai-sdk/cerebras`) — LLM chat with tool calling
+- **AI SDK** (`ai`) + **Cerebras/Groq/OpenAI/Anthropic** — multi-provider LLM chat with tool calling
 - **Zod** — schema validation (tool input schemas)
-- **Three.js** — WebGL 3D rendering
-- **@huggingface/transformers** — browser-side ONNX depth estimation
+- **Three.js** — WebGL 3D rendering with MeshStandardMaterial
+- **acorn** — AST parsing for sandbox code validation
 - **Motion** (`motion/react`) — animations
 - **TypeScript 5.9** strict mode, target ES2022, `verbatimModuleSyntax`
 
@@ -106,9 +105,10 @@ Key enforced rules:
 
 - **Relative imports fail lint** — Biome rejects `./` and `../` imports. Always use `@/`.
 - **`/api/chat` is Vite middleware in dev** — defined as a Vite plugin in `vite.config.ts`, SSR-loads `api/chat.ts` via `server.ssrLoadModule()`. In production, Vercel serves it as a serverless function from `api/chat.ts`.
-- **Hidden WebGL canvas** — the Three.js renderer canvas is appended to `document.body` with `display:none`; pixel data is read via `gl.readPixels()` each frame and converted to ASCII.
-- **Procedural code runs in Worker** — 30-second timeout, no point/vertex limits (buffers grow dynamically), seeded PRNG (Mulberry32). Worker is created from a blob URL and terminated after each execution.
+- **Procedural code runs in Worker** — 300-second timeout, no hard vertex limits (buffers grow dynamically but output validation warns at 100k, errors at 500k), seeded PRNG (Mulberry32). Worker is created from a blob URL and terminated after each execution.
+- **AST validation** — All procedural code is parsed by acorn and checked for dangerous API calls before execution in the worker.
 - **Two shadcn registries** — `@shadcn` (default) and `@ai-elements` (AI SDK components). Both in `components.json`.
 - **`verbatimModuleSyntax`** — use `import type` for type-only imports; bare type imports cause build errors.
-- **Theme localStorage key** is `autoscene-theme`, API key is `autoscene-api-key`.
-- **3D coordinate system** — X right, Y up, Z negative into screen. Point cloud lives at Z=-1 to Z=-6, center ~(0,0,-3). Camera at origin looking down -Z.
+- **Theme localStorage key** is `autoscene-theme`, settings key is `autoscene-settings`.
+- **3D coordinate system** — X right, Y up, Z negative into screen. Scene volume: X [-3,3], Y [-1.5,1.5], Z [-1,-6], center ~(0,0,-3). Camera at origin looking down -Z.
+- **Mesh-only rendering** — No point cloud or ASCII rendering. All geometry is rendered as `THREE.Mesh` with `MeshStandardMaterial` and vertex colors.

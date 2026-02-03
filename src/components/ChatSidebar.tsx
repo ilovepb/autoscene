@@ -1,5 +1,5 @@
-import { CheckIcon, ImageIcon, MessageSquare } from "lucide-react";
-import { type ChangeEvent, useCallback, useRef, useState } from "react";
+import { CheckIcon, MessageSquare } from "lucide-react";
+import { useState } from "react";
 import {
   Conversation,
   ConversationContent,
@@ -23,14 +23,11 @@ import {
   PromptInputBody,
   PromptInputButton,
   PromptInputFooter,
-  PromptInputHeader,
   PromptInputSubmit,
   PromptInputTextarea,
   PromptInputTools,
-  usePromptInputAttachments,
 } from "@/components/ai-elements/prompt-input";
 import { ChatMessages } from "@/components/ChatMessageParts";
-import { PromptInputAttachmentsDisplay } from "@/components/PromptInputAttachmentsDisplay";
 import type { ChatManager } from "@/hooks/useChatManager";
 
 interface Props {
@@ -44,41 +41,6 @@ const PROVIDER_SLUG: Record<string, string> = {
   openai: "openai",
   anthropic: "anthropic",
 };
-
-function AttachImageButton() {
-  const ref = useRef<HTMLInputElement>(null);
-  const attachments = usePromptInputAttachments();
-
-  const handleChange = useCallback(
-    (e: ChangeEvent<HTMLInputElement>) => {
-      if (e.target.files && e.target.files.length > 0) {
-        attachments.add(e.target.files);
-      }
-      e.target.value = "";
-    },
-    [attachments],
-  );
-
-  return (
-    <>
-      <input
-        ref={ref}
-        type="file"
-        accept="image/*"
-        multiple
-        className="sr-only"
-        onChange={handleChange}
-      />
-      <PromptInputButton
-        size="icon-sm"
-        onClick={() => ref.current?.click()}
-        aria-label="Upload image"
-      >
-        <ImageIcon className="size-4" />
-      </PromptInputButton>
-    </>
-  );
-}
 
 export function ChatSidebar({ chat, open }: Props) {
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
@@ -123,22 +85,15 @@ export function ChatSidebar({ chat, open }: Props) {
       {/* Input */}
       <div className="p-3 border-t border-border">
         <PromptInput
-          accept="image/*"
-          multiple
-          globalDrop
-          onSubmit={({ text, files }) => {
-            chat.sendMessage({ text, files });
+          onSubmit={({ text }) => {
+            chat.sendMessage({ text });
           }}
         >
-          <PromptInputHeader>
-            <PromptInputAttachmentsDisplay />
-          </PromptInputHeader>
           <PromptInputBody>
-            <PromptInputTextarea placeholder="Add rain, a spiral, trees..." />
+            <PromptInputTextarea placeholder="Add a sphere, terrain, trees..." />
           </PromptInputBody>
           <PromptInputFooter>
             <PromptInputTools>
-              <AttachImageButton />
               <ModelSelector
                 onOpenChange={setModelSelectorOpen}
                 open={modelSelectorOpen}

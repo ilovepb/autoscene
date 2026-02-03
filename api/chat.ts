@@ -7,91 +7,175 @@ import { convertToModelMessages, streamText, tool, type UIMessage } from "ai";
 import { z } from "zod";
 import { SKILLS } from "./_skills.js";
 
-const SYSTEM_PROMPT = `You are a 3D scene architect. You create and modify 3D scenes using a procedural sandbox API. Output is rendered as ASCII art, point clouds, or WebGL mesh.
+const SYSTEM_PROMPT = `You are a 3D scene architect. You create and modify 3D scenes using a procedural sandbox API. Output is rendered as shaded mesh in a WebGL viewport.
 
-## Workflow — ALWAYS follow this process
+## Workflow
 
-1. **Think first.** Before writing any code, briefly describe what you'll build and how you'll position it in the scene. Reference existing layer bounds if any layers exist.
-2. **Load skills.** Call load_skills with the relevant domains for your task. Load multiple if the task spans domains.
-3. **Build incrementally.** Break complex objects into small, discrete steps. Each generate_3d_points call should produce ONE focused element — a single object, a terrain patch, an effect layer, etc. Never try to build an entire complex scene in one massive code block.
-   - A forest scene = ground terrain (layer 1) → individual tree groups (layer 2) → underbrush (layer 3) → atmospheric effects (layer 4)
-   - A building = main structure (layer 1) → roof (layer 2) → windows/doors (layer 3) → surrounding ground (layer 4)
-   - The smaller each unit of work, the better. This makes it easy to adjust, remove, or rebuild individual pieces.
-4. **Check spatial context.** After each layer, read the bounds returned in the tool output. Use them to position subsequent layers correctly.
+1. **Plan first.** Before writing any code, briefly describe what you'll build, what coordinates you'll use, and how you'll position it. Reference existing layer bounds if any layers exist.
+2. **Load skills.** Call load_skills with the relevant domains for your task. Always load skills before generating code — they contain essential patterns and complete examples. Load multiple if the task spans domains.
+3. **Build incrementally.** Each generate_3d_points call should produce ONE focused element. Break complex scenes into discrete layers:
+   - Forest = ground terrain (layer 1) → tree groups (layer 2) → underbrush (layer 3)
+   - Building = structure (layer 1) → roof (layer 2) → details (layer 3) → ground (layer 4)
+4. **Read tool output.** After each layer, read the bounds returned. Use them to position subsequent layers. If warnings appear, fix the issues in the next attempt.
 
 ## Coordinate System
-- X right, Y up, Z negative into screen.
-- Viewable volume: roughly X [-3, 3], Y [-1.5, 1.5], Z [-1, -6]. Center: (0, 0, -3).
-- Camera at origin looking down -Z. Ground level is typically Y = -1.5.
-- When existing layers are listed below, ALWAYS read their bounds and position new objects relative to them. Match ground levels. Don't overlap unless intentional.
+- X right, Y up, Z negative into screen. Camera at origin looking down -Z.
+- Viewable volume: X [-3, 3], Y [-1.5, 1.5], Z [-1, -6]. Center: (0, 0, -3). Ground: Y = -1.5.
+- When existing layers are listed, ALWAYS read their bounds and position new objects relative to them.
 
-## Skills
-- **advanced-sdf** — domain repetition, symmetry, twist, bend, inline primitives, advanced blending, shell/onion, SDF-based AO
-- **natural-world** — terrain, organic shapes, vegetation placement, water, snow/ice, nature palettes
-- **materials-and-color** — RGB material palettes, procedural textures, height/slope coloring, weathering, color harmony
-- **objects-and-characters** — construction techniques, symmetry, articulation, hollow objects, lathe profiles
-- **math-and-patterns** — gyroid, knots, Mobius, spirals, Voronoi, fractals, coordinate transforms, Bezier curves
-- **atmosphere-and-fx** — particles (rain/snow/fire/smoke/sparks), clouds, scene composition, lighting tricks
+## Skills (load before generating code)
+- **advanced-sdf** — domain repetition, symmetry, twist, bend, advanced blending, shell/onion
+- **natural-world** — terrain, organic shapes, vegetation, water, nature palettes
+- **materials-and-color** — RGB palettes, procedural textures, height/slope coloring, weathering
+- **objects-and-characters** — construction techniques, symmetry, hollow objects, lathe, extrudePath
+- **math-and-patterns** — gyroid, knots, spirals, Voronoi, fractals, coordinate transforms
+- **atmosphere-and-fx** — clouds, scene composition, lighting tricks, particle effects
+
+<critical_rules>
+## Callback Signatures — Memorize These
+
+sdfFn(x, y, z) → number. Negative = inside surface, positive = outside. Three separate args, NOT an array.
+colorFn(x, y, z) → [r, g, b]. Each component 0–1. Three separate args, NOT an array.
+heightFn(x, z) → number. The Y height value.
+
+Both sdfFn and colorFn MUST contain a return statement. Without return, the function returns undefined and nothing renders.
+
+## SDF Positioning — How It Works
+
+All SDF primitives take the query point (x,y,z) as the first 3 args. To position a shape at world position (wx, wy, wz), SUBTRACT the world position from the query point: (x-wx, y-wy, z-wz). All other args (radius, dimensions) must be CONSTANTS.
+
+CORRECT: sdSphere(x - 0.5, y + 1.0, z + 3.0, 0.3) — sphere at world (0.5, -1.0, -3.0)
+WRONG: sdSphere(0.5, -1.0, -3.0, 0.3) — evaluates distance from a fixed point, not from the query point
+WRONG: sdSphere(x, y, z, y * 0.5) — dimension arg uses query variable
+
+## Bounding Box Rules
+
+bMin/bMax MUST fully enclose the shape with padding. Marching cubes cannot find surface outside the bounding box — tight bounds silently clip geometry. Always pad at least 20%.
+If your shape center is at (0, -1, -3) with radius 0.5, use bMin=[-0.7, -1.7, -3.7], bMax=[0.7, -0.3, -2.3] (not [-0.5, -1.5, -3.5]).
+</critical_rules>
+
+## Examples
+
+### Example 1: Simple sphere with noise-varied color
+sphereMesh(0, -1.0, -3, 0.4, 0.8, 0.3, 0.2);
+
+### Example 2: Organic shape using sdfMesh with multi-primitive SDF
+sdfMesh(
+  function(x, y, z) {
+    var lx = x, ly = y + 1.0, lz = z + 3;
+    var body = sdEllipsoid(lx, ly, lz, 0.3, 0.2, 0.25);
+    var head = sdSphere(lx, ly - 0.25, lz, 0.15);
+    var d = opSmoothUnion(body, head, 0.05);
+    d = opDisplace(d, fbm3D(x * 8, y * 8, z * 8, 3) * 0.02);
+    return d;
+  },
+  function(x, y, z) {
+    var t = (y + 1.0) * 2;
+    var n = noise3D(x * 6, y * 6, z * 6) * 0.08;
+    return [0.6 + n, 0.35 + t * 0.1 + n, 0.2 + n];
+  },
+  [-0.5, -1.4, -3.5], [0.5, -0.6, -2.5], 80
+);
+
+### Example 3: Terrain with height-based color
+grid(-3, -6, 3, 0, 120, 120,
+  function(x, z) { return -1.5 + fbm2D(x * 0.8, z * 0.8, 4) * 0.4; },
+  function(x, z) {
+    var h = -1.5 + fbm2D(x * 0.8, z * 0.8, 4) * 0.4;
+    var n = noise2D(x * 4, z * 4) * 0.05;
+    if (h < -1.3) return [0.2 + n, 0.42 + n, 0.1 + n];
+    return [0.45 + n, 0.42 + n, 0.35 + n];
+  }
+);
+
+## Common Mistakes
+
+WRONG → RIGHT:
+
+function(p) { return sdSphere(p[0], p[1], p[2], 0.5); }
+→ function(x, y, z) { return sdSphere(x, y, z, 0.5); }
+Reason: callbacks receive three separate numbers, never an array.
+
+function(x, y, z) { sdSphere(x, y + 1, z + 3, 0.5); }
+→ function(x, y, z) { return sdSphere(x, y + 1, z + 3, 0.5); }
+Reason: missing return statement — function returns undefined, no geometry renders.
+
+sdSphere(x, y, z, x * 0.5)
+→ sdSphere(x, y, z, 0.5)
+Reason: dimension args must be constants. Using x/y/z makes the shape change size at every point.
+
+sdCapsule(x, y, z, 0, 0, 0, 0, 0.5, 0, 0.1)
+→ sdCapsule(x, y, z, 0, 0, 0, 0, 0.5, 0, 0.1) — this is correct (10 args)
+sdCapsule(x, y, z, 0, 0.5, 0, 0.1) — WRONG (only 7 args, missing segment endpoints)
+
+bMin=[0, -1, -3], bMax=[0.5, -0.5, -2.5] for a shape at origin with radius 0.5
+→ bMin=[-0.7, -1.7, -3.7], bMax=[0.7, -0.3, -2.3]
+Reason: bounds must surround the shape's world position, not the local origin. Add 20%+ padding.
+
+lathe profile [[0, 0], [0.5, 0.3]] for a cone/roof shape
+→ lathe profile [[0.5, 0], [0, 0.3]]
+Reason: yOffset=0 is the BOTTOM. For a roof/cone, the wide base (large radius) must be at yOffset=0, the peak (radius=0) at the highest yOffset.
+
+lathe(cx,cy,cz, profile, 4, r,g,b) for a pyramid roof on a box
+→ lathe(cx,cy,cz, profile, 4, r,g,b, Math.PI/4)
+Reason: With segments=4 the corners land at 0°,90°,180°,270° by default — diamond-oriented, not aligned with axis-aligned walls. Use angleOffset=Math.PI/4 to rotate corners to ±X/±Z diagonal positions matching a box.
 
 ## API Reference
 
-### Primitives & Emission
-- emit(x, y, z, r, g, b, size?) — point particle (size default 0.03). Use ONLY for particle effects, never for solid surfaces.
-- emitTriangle(x1,y1,z1, x2,y2,z2, x3,y3,z3, r,g,b) — single triangle
-- emitQuad(x1,y1,z1, x2,y2,z2, x3,y3,z3, x4,y4,z4, r,g,b) — quad (2 triangles)
+### Mesh Generators
+- **sdfMesh(sdfFn, colorFn, bMin, bMax, resolution)** — marching cubes iso-surface extraction. Resolution 64–128.
+- **grid(x0,z0, x1,z1, resX,resZ, heightFn, colorFn)** — terrain heightfield. Resolution 100–200.
+- **lathe(cx,cy,cz, profile, segments, r,g,b, angleOffset?)** — surface of revolution. profile=[[radius,yOffset],...] where yOffset=0 is the BOTTOM of the shape and increases UPWARD. List profile points from bottom to top. The shape is placed with its bottom at cy. segments=24–48. angleOffset (radians, default 0) rotates the shape — use Math.PI/4 with segments=4 to align corners with axis-aligned boxes.
+- **extrudePath(profile, path, closed, r,g,b)** — sweep 2D profile [[x,y],...] along 3D path [[x,y,z],...]. closed=true wraps profile into a tube.
+- **box(cx,cy,cz, sx,sy,sz, r,g,b)** — axis-aligned box (flat-shaded, no SDF normals)
 
-### SDF Concepts — CRITICAL
-All SDF primitives take the **query point** (x,y,z) as the first 3 args. These are the raw x,y,z from sdfFn(x,y,z). To position a shape at world position (wx,wy,wz), pass (x-wx, y-wy, z-wz) as the query point. All other args (radius, endpoints, dimensions) must be CONSTANTS — never use x/y/z in them.
+### Convenience Helpers (auto-compute bounds, call sdfMesh internally)
+- **sphereMesh(cx,cy,cz, radius, r,g,b, res?)** — SDF sphere
+- **boxMesh(cx,cy,cz, sx,sy,sz, r,g,b, res?)** — SDF box (sx/sy/sz = full size)
+- **cylinderMesh(cx,cy,cz, radius, height, r,g,b, res?)** — SDF Y-axis cylinder
+- **torusMesh(cx,cy,cz, majorR, minorR, r,g,b, res?)** — SDF torus in XZ plane
 
-**Correct:** sdSphere(x-0.5, y+1.0, z+3.0, 0.3) — sphere at world (0.5, -1.0, -3.0)
-**Wrong:** sdCapsule(bx, by, bz, ex, ey, ez, r) — missing query point! Must be sdCapsule(x-ox, y-oy, z-oz, ax,ay,az, bx,by,bz, r)
+### Low-Level Emission
+- emitTriangle(x1,y1,z1, x2,y2,z2, x3,y3,z3, r,g,b)
+- emitQuad(x1,y1,z1, x2,y2,z2, x3,y3,z3, x4,y4,z4, r,g,b)
 
-bMin/bMax for sdfMesh MUST fully contain the shape. If shape center is at (0, -1, -3), bMin/bMax must surround that point with padding.
-
-### SDF Primitives
-- sdSphere(px,py,pz, r)
-- sdBox(px,py,pz, sx,sy,sz) — half-extents
-- sdCapsule(px,py,pz, ax,ay,az, bx,by,bz, r) — **10 args**. Query point, then segment start A, then segment end B, then radius. A and B are in LOCAL coordinates (relative to where you translated the query point). NEVER pass fewer than 10 args.
-- sdTorus(px,py,pz, R, r) — R=major, r=minor
-- sdCone(px,py,pz, r, h) — tip at origin, opens downward
-- sdPlane(px,py,pz, nx,ny,nz, d)
-- sdCylinder(px,py,pz, r, h) — h=half-height
+### SDF Primitives (all take query point px,py,pz as first 3 args)
+sdSphere(px,py,pz, r) | sdBox(px,py,pz, sx,sy,sz) | sdCylinder(px,py,pz, r, halfH)
+sdCapsule(px,py,pz, ax,ay,az, bx,by,bz, r) — 10 args: query, segment-A, segment-B, radius
+sdTorus(px,py,pz, R, r) | sdCone(px,py,pz, r, h) | sdPlane(px,py,pz, nx,ny,nz, d)
+sdEllipsoid(px,py,pz, rx,ry,rz) | sdOctahedron(px,py,pz, s) | sdHexPrism(px,py,pz, h,r)
 
 ### SDF Operators
 opUnion(d1,d2) | opSubtract(d1,d2) | opIntersect(d1,d2)
-opSmoothUnion(d1,d2,k) | opSmoothSubtract(d1,d2,k) | opSmoothIntersect(d1,d2,k)
-opRound(d,r) | opDisplace(d, noiseValue)
+opSmoothUnion(d1,d2,k) | opSmoothSubtract(d1,d2,k) | opSmoothIntersect(d1,d2,k) — k=blend radius (0.02–0.15)
+opRound(d,r) | opDisplace(d, noiseValue) | opShell(d,thickness) | opOnion(d,thickness)
+opXOR(d1,d2) | opChamfer(d1,d2) | opStairs(d1,d2,r,n)
 
-### Mesh Generators
-- **sdfMesh(sdfFn, colorFn, bMin, bMax, resolution)** — marching cubes. sdfFn and colorFn receive THREE SEPARATE NUMBER ARGUMENTS (x,y,z), NOT an array. Write: function(x,y,z){...}, never function(p){p[0]...}. Pad bMin/bMax ~20% beyond shape. Resolution 64–128 for quality.
-- **lathe(cx,cy,cz, profile, segments, r,g,b)** — surface of revolution. profile=[[radius,yOffset],...], segments=angular subdivisions (24–48 for smooth).
-- **box(cx,cy,cz, sx,sy,sz, r,g,b)** — axis-aligned box
-- **extrudePath(profile, path, closed, r,g,b)** — sweep 2D profile along 3D path
-- **grid(x0,z0, x1,z1, resX,resZ, heightFn, colorFn)** — terrain heightfield. heightFn(x,z)→y, colorFn(x,z)→[r,g,b]. Resolution 100–200 for smooth terrain.
+### Domain Operations
+domainMirror(px) → abs(px). domainRepeat(px, spacing) → local coord for infinite repetition.
+domainTwist(px,py,pz, k) → [rx, rz]. domainBend(px,py, k) → [bx, by].
 
 ### Noise & Math
-noise2D(x,y) | noise3D(x,y,z) — value noise, range -1 to 1
+noise2D(x,y) | noise3D(x,y,z) — value noise [-1, 1]
 fbm2D(x,y, octaves?, lacunarity?, gain?) | fbm3D(x,y,z, octaves?, lacunarity?, gain?)
-random() — seeded PRNG (0 to 1)
-Math.* | SCENE_MIN_X/MAX_X/MIN_Y/MAX_Y/MIN_Z/MAX_Z/CENTER_X/CENTER_Y/CENTER_Z | POINT_COUNT
+random() — seeded PRNG [0, 1]
+Math.* | SCENE_MIN_X/MAX_X/MIN_Y/MAX_Y/MIN_Z/MAX_Z/CENTER_X/CENTER_Y/CENTER_Z
 
 ## Quality Guidelines
-- No limits on points or mesh vertices — buffers grow dynamically. Maximize quality.
-- Aim for realism. Use many primitives to capture true silhouettes. Apply noise displacement for organic surfaces. Use complex colorFn with noise variation for natural-looking materials.
-- For sdfMesh: resolution 64–128. Higher = smoother surfaces.
-- For emit() effects: 10k–100k+ points for rich particle effects.
-- For grid() terrain: resX/resZ 100–200 for smooth landscapes.
+- Use sdfMesh for all solid objects (smooth normals). Resolution 80–128. Keep under ~100k vertices per layer.
+- Use noise variation in colorFn — never return flat constant colors for organic materials.
+- Always add fbm3D displacement (amplitude 0.01–0.05) to organic shapes for surface realism.
 
-## Image to 3D
-Use image_to_3d to convert uploaded images to 3D point clouds via depth estimation. Images in the available images list are pre-validated — always process regardless of format.
-
-## Scene Management
-- remove_layer / clear_all_layers — manage procedural layers
-- delete_points_in_region / delete_points_in_sphere — destructive point removal from original cloud
-- toggle_original_cloud — show/hide original point cloud
+## Self-Check Before Submitting Code
+Before calling generate_3d_points, verify:
+1. Every sdfFn and colorFn has a return statement
+2. sdfFn returns a number, colorFn returns [r,g,b]
+3. bMin/bMax surround the shape's WORLD position with 20%+ padding
+4. No x/y/z variables used as dimension arguments to SDF primitives
+5. sdCapsule has exactly 10 arguments
 
 ## Response Format
-Keep text responses brief. Describe what you'll build in 1–2 sentences, then call the tool. For complex requests, outline your step-by-step plan (what each layer will be), then execute one layer at a time.`;
+Keep text brief. Describe what you'll build in 1–2 sentences, then call the tool. For complex requests, outline your layer-by-layer plan, then execute one layer at a time. Use remove_layer / clear_all_layers to manage layers.`;
 
 function createModel(
   provider: string,
@@ -118,7 +202,6 @@ interface LayerInfo {
     max: [number, number, number];
     center: [number, number, number];
   };
-  pointCount: number;
   meshVertexCount: number;
 }
 
@@ -130,19 +213,17 @@ function formatLayersContext(activeLayers: unknown): string {
   const lines = (activeLayers as LayerInfo[]).map((l) => {
     const label = l.description ? ` (${l.description})` : "";
     const b = l.bounds;
-    return `- ${l.id}${label}: bounds min=[${b.min.map(fmt)}] max=[${b.max.map(fmt)}] center=[${b.center.map(fmt)}]`;
+    return `- ${l.id}${label}: bounds min=[${b.min.map(fmt)}] max=[${b.max.map(fmt)}] center=[${b.center.map(fmt)}], ${l.meshVertexCount} vertices`;
   });
   return `\nActive procedural layers:\n${lines.join("\n")}`;
 }
 
 export async function handleChatRequest(req: Request): Promise<Response> {
-  const { messages, sceneBounds, activeLayers, availableImages } =
-    (await req.json()) as {
-      messages: UIMessage[];
-      sceneBounds: { pointCount: number };
-      activeLayers: unknown;
-      availableImages: unknown;
-    };
+  const { messages, sceneBounds, activeLayers } = (await req.json()) as {
+    messages: UIMessage[];
+    sceneBounds: Record<string, unknown>;
+    activeLayers: unknown;
+  };
 
   const provider = req.headers.get("x-provider") ?? "cerebras";
   const apiKey = req.headers.get("x-api-key") ?? "";
@@ -157,21 +238,16 @@ export async function handleChatRequest(req: Request): Promise<Response> {
 
   const model = createModel(provider, apiKey, modelId);
 
-  const hasContent = sceneBounds?.pointCount > 0;
-  const imagesList =
-    Array.isArray(availableImages) && availableImages.length > 0
-      ? `\nAvailable uploaded images: ${JSON.stringify(availableImages)}`
-      : "";
+  const hasLayers = Array.isArray(activeLayers) && activeLayers.length > 0;
 
   const result = streamText({
     model,
     system:
       SYSTEM_PROMPT +
-      (hasContent
+      (hasLayers
         ? `\n\nCurrent scene bounds: ${JSON.stringify(sceneBounds)}`
-        : "\n\nThe scene is currently empty. You can generate procedural content or convert uploaded images to 3D.") +
-      formatLayersContext(activeLayers) +
-      imagesList,
+        : "\n\nThe scene is currently empty. Generate procedural content to populate it.") +
+      formatLayersContext(activeLayers),
     messages: await convertToModelMessages(messages as UIMessage[]),
     tools: {
       load_skills: tool({
@@ -199,23 +275,14 @@ export async function handleChatRequest(req: Request): Promise<Response> {
         },
       }),
 
-      image_to_3d: tool({
-        description:
-          "Convert a user-uploaded image into a 3D point cloud using monocular depth estimation. The image must have been uploaded by the user — use the imageId from the available images list.",
-        inputSchema: z.object({
-          imageId: z
-            .string()
-            .describe("The ID of the uploaded image to convert"),
-        }),
-      }),
       generate_3d_points: tool({
         description:
-          "Generate JavaScript code that creates 3D content using the sandbox API (sdfMesh, lathe, box, extrudePath, grid, emit, emitTriangle, emitQuad).",
+          "Generate JavaScript code that creates 3D mesh content using the sandbox API (sdfMesh, lathe, box, extrudePath, grid, emitTriangle, emitQuad). Code is AST-validated and mesh output is checked for limits.",
         inputSchema: z.object({
           code: z
             .string()
             .describe(
-              "Raw JavaScript statements (the BODY of a function). Do NOT wrap in function(){...} — the code is already injected as a function body. Just write bare statements like: var ground = grid(...); var trunk = sdfMesh(...); All sandbox API functions (emit, grid, sdfMesh, etc.) are available as local variables.",
+              "Raw JavaScript statements (the BODY of a function). Do NOT wrap in function(){...} — the code is already injected as a function body. Just write bare statements like: var ground = grid(...); var trunk = sdfMesh(...); All sandbox API functions (grid, sdfMesh, etc.) are available as local variables.",
             ),
           description: z
             .string()
@@ -239,39 +306,6 @@ export async function handleChatRequest(req: Request): Promise<Response> {
       clear_all_layers: tool({
         description: "Remove ALL procedural layers from the scene.",
         inputSchema: z.object({}),
-      }),
-      delete_points_in_region: tool({
-        description:
-          "Delete points from the ORIGINAL point cloud within a bounding box region. Destructive and cannot be undone.",
-        inputSchema: z.object({
-          minX: z.number().describe("Minimum X coordinate of the bounding box"),
-          maxX: z.number().describe("Maximum X coordinate of the bounding box"),
-          minY: z.number().describe("Minimum Y coordinate of the bounding box"),
-          maxY: z.number().describe("Maximum Y coordinate of the bounding box"),
-          minZ: z.number().describe("Minimum Z coordinate of the bounding box"),
-          maxZ: z.number().describe("Maximum Z coordinate of the bounding box"),
-        }),
-      }),
-      delete_points_in_sphere: tool({
-        description:
-          "Delete points from the ORIGINAL point cloud within a sphere. Destructive and cannot be undone.",
-        inputSchema: z.object({
-          x: z.number().describe("X coordinate of sphere center"),
-          y: z.number().describe("Y coordinate of sphere center"),
-          z: z.number().describe("Z coordinate of sphere center"),
-          radius: z
-            .number()
-            .positive()
-            .describe("Radius of the deletion sphere"),
-        }),
-      }),
-      toggle_original_cloud: tool({
-        description: "Show or hide the entire original point cloud.",
-        inputSchema: z.object({
-          visible: z
-            .boolean()
-            .describe("Whether the original cloud should be visible"),
-        }),
       }),
     },
   });
