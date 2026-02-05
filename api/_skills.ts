@@ -34,6 +34,17 @@ Bend — rotate XY proportional to X:
   var bn = domainBend(lx, ly, k);
   var bx = bn[0], by = bn[1];
 
+Rotate around Y — place features at angles (branches, petals, appendages):
+  var rot = domainRotateY(lx, lz, angle);
+  var rx = rot[0], rz = rot[1];
+  // Use (rx, ly, rz) instead of (lx, ly, lz). angle in radians.
+  // Common pattern: loop N features around Y axis:
+  for (var i = 0; i < N; i++) {
+    var angle = i / N * Math.PI * 2;
+    var rot = domainRotateY(lx, lz, angle);
+    d = opSmoothUnion(d, sdCapsule(rot[0], ly - branchY, rot[1], ...args), 0.03);
+  }
+
 Elongation — stretch shape along axis while preserving ends:
   var ex = Math.max(Math.abs(lx) - h, 0) * (lx > 0 ? 1 : -1);
   // Use ex instead of lx. Stretches by 2h along X.
@@ -44,6 +55,25 @@ Uniform Scale:
 ## Shell / Onion
 Turn any solid into a thin shell: var d = opShell(solidSDF, thickness);
 Stack for concentric layers: opOnion(opOnion(d, t1), t2)
+
+## sdTaperedCylinder — Tapered Trunk/Branch Primitive
+sdTaperedCylinder(px,py,pz, r1,r2,h) — r1 radius at bottom (-h), r2 at top (+h)
+Ideal for tree trunks, branches, horns, tentacles, legs.
+
+Example — tree trunk: sdTaperedCylinder(lx, ly - 0.5, lz, 0.2, 0.1, 0.5)
+This creates a trunk 1.0 unit tall, 0.2 radius at base, 0.1 at top.
+
+## domainRotateY — Rotate Around Y Axis
+domainRotateY(px, pz, theta) → [rx, rz]
+Use rx, rz in place of px, pz. Essential for placing branches, petals, any radial arrangement.
+
+Example — 6 branches around a trunk:
+  for (var i = 0; i < 6; i++) {
+    var angle = i / 6 * Math.PI * 2;
+    var rot = domainRotateY(0.4, 0, angle); // 0.4 = branch distance from center
+    var bx = cx + rot[0], bz = cz + rot[1];
+    // Place branch at (bx, branchY, bz)
+  }
 
 ## SDF-Based Ambient Occlusion (in colorFn)
 Darken crevices by sampling the SDF along the surface normal:
@@ -156,6 +186,96 @@ Bark: [0.35,0.22,0.10], Foliage: [0.15,0.40,0.08], Moss: [0.20,0.35,0.12]
 Grass: [0.20,0.45,0.10], Rock: [0.45,0.42,0.38], Sand: [0.76,0.70,0.50]
 Snow: [0.90,0.90,0.95], Deep water: [0.05,0.15,0.40], Shallow water: [0.10,0.35,0.55]
 
+## Material Properties for Natural Objects
+Always call setMaterial() for each layer to set PBR properties:
+- Bark/wood: setMaterial({ roughness: 0.9, metalness: 0 })
+- Leaves/foliage: setMaterial({ roughness: 0.75, metalness: 0 })
+- Stone/rock: setMaterial({ roughness: 0.85, metalness: 0 })
+- Water: setMaterial({ roughness: 0.1, metalness: 0.2 })
+- Moss: setMaterial({ roughness: 0.8, metalness: 0 })
+
+## Tree Construction Recipe (Multi-Layer)
+
+### Trunk (sdTaperedCylinder + bark texture)
+\`\`\`js
+// Call setMaterial for rough bark
+setMaterial({ roughness: 0.9 });
+var cx = 0, cy = -1.5, cz = -3;
+sdfMesh(
+  function(x, y, z) {
+    var lx = x - cx, ly = y - cy, lz = z - cz;
+    // Tapered trunk: wider at base (r1=0.15), narrow at top (r2=0.08), half-height 0.5
+    var d = sdTaperedCylinder(lx, ly - 0.5, lz, 0.15, 0.08, 0.5);
+    // Bark texture: dual-frequency displacement
+    var bark = worley3D(x * 8, y * 3, z * 8);
+    d = opDisplace(d, bark[0] * 0.02 + fbm3D(x * 12, y * 12, z * 12, 4) * 0.01);
+    return d;
+  },
+  function(x, y, z) {
+    var bark = worley3D(x * 8, y * 3, z * 8);
+    var fissure = bark[1] - bark[0]; // Dark in fissures
+    var n = noise3D(x * 6, y * 6, z * 6) * 0.05;
+    return [0.35 + fissure * 0.1 + n, 0.22 + fissure * 0.06 + n, 0.10 + n];
+  },
+  [cx - 0.3, cy - 0.05, cz - 0.3], [cx + 0.3, cy + 1.1, cz + 0.3], 80
+);
+\`\`\`
+
+### Branches (loop with domainRotateY)
+\`\`\`js
+setMaterial({ roughness: 0.85 });
+// Place 5 branches radiating from trunk top
+var trunkTop = LAYERS["layer-0"].bounds.max[1];
+var cx = LAYERS["layer-0"].center[0], cz = LAYERS["layer-0"].center[2];
+for (var i = 0; i < 5; i++) {
+  var angle = (i / 5) * Math.PI * 2 + random() * 0.3;
+  var branchLen = 0.3 + random() * 0.2;
+  var rot = domainRotateY(branchLen, 0, angle);
+  var bx = cx + rot[0], bz = cz + rot[1];
+  var by = trunkTop - 0.1 + random() * 0.15;
+  // Use sdCapsule for each branch
+  sdfMesh(
+    function(x, y, z) {
+      return sdCapsule(x, y, z, cx, by, cz, bx, by + 0.15, bz, 0.03 + random() * 0.01);
+    },
+    function(x, y, z) {
+      var n = noise3D(x * 10, y * 10, z * 10) * 0.05;
+      return [0.35 + n, 0.22 + n, 0.10 + n];
+    },
+    [Math.min(cx, bx) - 0.1, by - 0.1, Math.min(cz, bz) - 0.1],
+    [Math.max(cx, bx) + 0.1, by + 0.3, Math.max(cz, bz) + 0.1], 48
+  );
+}
+\`\`\`
+
+### Foliage (multi-ellipsoid clusters)
+\`\`\`js
+setMaterial({ roughness: 0.75 });
+// Dense leaf canopy using displaced ellipsoids
+sdfMesh(
+  function(x, y, z) {
+    var topY = LAYERS["layer-0"].bounds.max[1];
+    var cx = LAYERS["layer-0"].center[0], cz = LAYERS["layer-0"].center[2];
+    var lx = x - cx, ly = y - (topY + 0.15), lz = z - cz;
+    // Multiple overlapping ellipsoids for organic canopy
+    var d = sdEllipsoid(lx, ly, lz, 0.45, 0.3, 0.45);
+    d = opSmoothUnion(d, sdEllipsoid(lx - 0.15, ly + 0.1, lz + 0.1, 0.3, 0.25, 0.3), 0.1);
+    d = opSmoothUnion(d, sdEllipsoid(lx + 0.12, ly - 0.05, lz - 0.12, 0.35, 0.2, 0.35), 0.1);
+    // Leaf surface texture
+    d = opDisplace(d, fbm3D(x * 15, y * 15, z * 15, 4) * 0.04);
+    return d;
+  },
+  function(x, y, z) {
+    var ly = y - LAYERS["layer-0"].bounds.max[1];
+    var n = fbm3D(x * 8, y * 8, z * 8, 3) * 0.08;
+    // Height-varied greens: darker below, lighter above
+    var t = Math.max(0, Math.min(1, (ly + 0.2) / 0.6));
+    return [0.12 + t * 0.08 + n, 0.35 + t * 0.15 + n, 0.06 + t * 0.04 + n];
+  },
+  [cx - 0.6, topY - 0.2, cz - 0.6], [cx + 0.6, topY + 0.55, cz + 0.6], 80
+);
+\`\`\`
+
 ## Complete Example — Mushroom
 
 \`\`\`js
@@ -258,6 +378,34 @@ ALWAYS add noise: return [baseR + noise3D(x*s,y*s,z*s)*0.05, ...] for natural im
 Rust: var mask=fbm3D(x*8,y*8,z*8,4)*0.5+0.5; if(mask>0.6) blend toward [0.55,0.25,0.10]
 Moss: var mask=fbm3D(x*6,y*6,z*6)*0.5+0.5; if(mask>0.5 && surfaceNormalY>0.5) blend toward [0.20,0.35,0.12]
 Patina: blend toward [0.30,0.65,0.50] using noise mask on exposed surfaces
+
+## Material Control (PBR)
+Call setMaterial() once per layer to set physical material properties:
+- setMaterial({ roughness: 0.9 }) — rough bark, stone
+- setMaterial({ roughness: 0.75 }) — foliage, fabric
+- setMaterial({ roughness: 0.2, metalness: 0.9 }) — polished metal
+- setMaterial({ roughness: 0.05, opacity: 0.3 }) — glass, ice, water (only use opacity for genuinely transparent materials)
+- Default if not called: roughness=0.55, metalness=0.0, opacity=1.0
+- Solid materials (wood, stone, metal, bark, leaves, skin, fabric) must ALWAYS be fully opaque — never set opacity on them.
+
+## Worley Noise Patterns
+Use worley2D/worley3D for cellular textures. Returns [F1, F2]:
+- F1 = distance to nearest cell center (smooth cells)
+- F2 - F1 = cell edge detection (cobblestone, scales)
+
+Bark fissures:
+  var w = worley3D(x * 8, y * 3, z * 8);
+  var fissure = w[1] - w[0];
+  // Dark in deep fissures: color *= (0.7 + 0.3 * fissure)
+
+Cobblestone:
+  var w = worley2D(x * 5, z * 5);
+  var edge = w[1] - w[0];
+  // Mortar in gaps: edge < 0.1 ? mortarColor : stoneColor
+
+Scales/cells:
+  var w = worley3D(x * 10, y * 10, z * 10);
+  // Color by cell distance: smooth gradient from center
 
 ## Math Utilities
 smoothstep: function ss(a,b,t){t=(t-a)/(b-a);t=t<0?0:t>1?1:t;return t*t*(3-2*t);}

@@ -3,7 +3,9 @@ import {
   DefaultChatTransport,
   lastAssistantMessageIsCompleteWithToolCalls,
 } from "ai";
+import { useSetAtom } from "jotai";
 import { useCallback, useMemo, useRef, useState } from "react";
+import { layersAtom } from "@/atoms/layers";
 import {
   computeLayerBounds,
   executeProceduralCode,
@@ -11,6 +13,10 @@ import {
   type LayerMeta,
   type SceneBounds,
 } from "@/lib/procedural/engine";
+import {
+  analyzeSpatialRelationships,
+  formatSpatialAnalysis,
+} from "@/lib/procedural/spatial";
 import { validateMeshOutput } from "@/lib/sandbox/outputValidation";
 import type { SceneHandle } from "@/lib/scene";
 import {
@@ -29,7 +35,29 @@ function formatLayerOutput(layer: GeneratedLayer, meta: LayerMeta): string {
   const triangles = Math.floor(layer.meshVertexCount / 3);
   const b = meta.bounds;
   const fmt = (n: number) => n.toFixed(2);
-  return `generated ${triangles} triangles (layer: ${layer.id}, bounds: min=[${b.min.map(fmt)}] max=[${b.max.map(fmt)}] center=[${b.center.map(fmt)}])`;
+  const size: [number, number, number] = [
+    b.max[0] - b.min[0],
+    b.max[1] - b.min[1],
+    b.max[2] - b.min[2],
+  ];
+  const topCenter: [number, number, number] = [
+    b.center[0],
+    b.max[1],
+    b.center[2],
+  ];
+  const bottomCenter: [number, number, number] = [
+    b.center[0],
+    b.min[1],
+    b.center[2],
+  ];
+  return [
+    `generated ${triangles} triangles (layer: ${layer.id})`,
+    `  bounds: min=[${b.min.map(fmt)}] max=[${b.max.map(fmt)}]`,
+    `  center: [${b.center.map(fmt)}]`,
+    `  top-center: [${topCenter.map(fmt)}]  bottom-center: [${bottomCenter.map(fmt)}]`,
+    `  size: [${size.map(fmt)}]`,
+    `  use LAYERS["${layer.id}"] in subsequent code to reference these bounds`,
+  ].join("\n");
 }
 
 export interface ChatManagerOptions {
@@ -41,6 +69,8 @@ export function useChatManager(
   boundsRef: React.RefObject<SceneBounds>,
   options: ChatManagerOptions,
 ) {
+  const setLayers = useSetAtom(layersAtom);
+
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
@@ -87,12 +117,20 @@ export function useChatManager(
           const layer: GeneratedLayer = await executeProceduralCode(
             input.code,
             boundsRef.current,
+            undefined,
+            Array.from(layerMetaRef.current.values()),
           );
           activeLayersRef.current.set(layer.id, layer);
           const meta: LayerMeta = {
             ...computeLayerBounds(layer),
             description: input.description ?? "",
           };
+          // Analyze spatial relationships BEFORE adding to the map
+          // so the new layer isn't compared against itself
+          const spatial = analyzeSpatialRelationships(
+            meta,
+            Array.from(layerMetaRef.current.values()),
+          );
           layerMetaRef.current.set(layer.id, meta);
           const handle = sceneHandleRef.current;
           if (handle) {
@@ -101,9 +139,21 @@ export function useChatManager(
             pendingLayersRef.current.push(layer);
             optionsRef.current.onTransitionToViewing();
           }
+          setLayers((prev) => [
+            ...prev,
+            {
+              id: layer.id,
+              description: input.description ?? "",
+              vertexCount: layer.meshVertexCount,
+              visible: true,
+            },
+          ]);
           // Check for mesh quality warnings and include them in tool output
           const meshVal = validateMeshOutput(layer);
           let output = formatLayerOutput(layer, meta);
+          if (spatial) {
+            output += formatSpatialAnalysis(spatial);
+          }
           if (meshVal.warnings.length > 0) {
             output += `\n\nwarnings:\n${meshVal.warnings.map((w) => `- ${w}`).join("\n")}`;
           }
@@ -129,6 +179,7 @@ export function useChatManager(
             handle.removeLayer(input.layerId);
             activeLayersRef.current.delete(input.layerId);
             layerMetaRef.current.delete(input.layerId);
+            setLayers((prev) => prev.filter((l) => l.id !== input.layerId));
             addToolOutput({
               tool: "remove_layer",
               toolCallId: toolCall.toolCallId,
@@ -150,6 +201,7 @@ export function useChatManager(
           handle.clearLayers();
           activeLayersRef.current.clear();
           layerMetaRef.current.clear();
+          setLayers([]);
           addToolOutput({
             tool: "clear_all_layers",
             toolCallId: toolCall.toolCallId,
@@ -168,17 +220,29 @@ export function useChatManager(
     [sendMessage],
   );
 
-  const flushPendingLayers = useCallback((handle: SceneHandle) => {
-    // First, flush any layers that arrived before the scene existed
-    for (const layer of pendingLayersRef.current) {
-      activeLayersRef.current.set(layer.id, layer);
-    }
-    pendingLayersRef.current = [];
-    // Replay all active layers into the (potentially new) scene
-    for (const layer of activeLayersRef.current.values()) {
-      handle.addLayer(layer);
-    }
-  }, []);
+  const flushPendingLayers = useCallback(
+    (handle: SceneHandle) => {
+      // First, flush any layers that arrived before the scene existed
+      for (const layer of pendingLayersRef.current) {
+        activeLayersRef.current.set(layer.id, layer);
+      }
+      pendingLayersRef.current = [];
+      // Replay all active layers into the (potentially new) scene
+      for (const layer of activeLayersRef.current.values()) {
+        handle.addLayer(layer);
+      }
+      // Rebuild the layers atom from current state
+      setLayers(
+        Array.from(activeLayersRef.current.entries()).map(([id, layer]) => ({
+          id,
+          description: layerMetaRef.current.get(id)?.description ?? "",
+          vertexCount: layer.meshVertexCount,
+          visible: true,
+        })),
+      );
+    },
+    [setLayers],
+  );
 
   return {
     messages,

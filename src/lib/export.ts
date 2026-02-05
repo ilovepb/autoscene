@@ -11,11 +11,26 @@ export async function exportSceneAsGLB(
 ): Promise<void> {
   const exporter = new GLTFExporter();
 
+  // Temporarily hide ground plane(s) so they aren't included in the GLB.
+  // We use the onlyVisible flag below, so setting visible=false excludes them.
+  const hiddenMeshes: THREE.Object3D[] = [];
+  scene.traverse((child) => {
+    if (child.userData.isGroundPlane && child.visible) {
+      child.visible = false;
+      hiddenMeshes.push(child);
+    }
+  });
+
   const glb = await exporter.parseAsync(scene, {
     binary: true,
-    // Only export meshes (skip lights, cameras, helpers)
+    // Only export visible meshes (skip lights, cameras, helpers, hidden ground)
     onlyVisible: true,
   });
+
+  // Restore visibility of ground planes after export
+  for (const mesh of hiddenMeshes) {
+    mesh.visible = true;
+  }
 
   // parseAsync with binary:true returns an ArrayBuffer
   const blob = new Blob([glb as ArrayBuffer], {

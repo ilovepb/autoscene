@@ -61,6 +61,16 @@ export default function App() {
     }
   }, []);
 
+  const handleToggleLayerVisibility = useCallback(
+    (id: string, visible: boolean) => {
+      const handle = sceneHandleRef.current;
+      if (handle) {
+        handle.setLayerVisible(id, visible);
+      }
+    },
+    [],
+  );
+
   return (
     <JotaiProvider>
       <ThemeProvider defaultTheme="dark" storageKey="autoscene-theme">
@@ -76,6 +86,7 @@ export default function App() {
                       sidebarOpen={sidebarOpen}
                       onToggleSidebar={() => setSidebarOpen((v) => !v)}
                       onExportGLB={handleExportGLB}
+                      onToggleLayerVisibility={handleToggleLayerVisibility}
                     />
                   }
                   onSceneReady={handleSceneReady}

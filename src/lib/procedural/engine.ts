@@ -4,6 +4,12 @@ export interface SceneBounds {
   center: [number, number, number];
 }
 
+export interface MaterialProps {
+  roughness?: number;
+  metalness?: number;
+  opacity?: number;
+}
+
 export interface GeneratedLayer {
   id: string;
   meshPositions: Float32Array;
@@ -11,6 +17,7 @@ export interface GeneratedLayer {
   meshVertexCount: number;
   meshNormals?: Float32Array;
   hasCustomNormals?: boolean;
+  materialProps?: MaterialProps;
 }
 
 export interface LayerMeta {
@@ -134,6 +141,56 @@ function fbm3D(x, y, z, octaves, lacunarity, gain) {
     freq *= lacunarity;
   }
   return sum / norm;
+}
+
+// Worley/Cellular noise — returns [F1, F2] (nearest and second-nearest cell distances)
+// Used for organic textures like stone, scales, cell membranes, etc.
+function worley2D(x, y) {
+  var ix = Math.floor(x), iy = Math.floor(y);
+  var f1 = 1e10, f2 = 1e10;
+  // Search 3x3 neighborhood of cells for closest feature points
+  for (var di = -1; di <= 1; di++) {
+    for (var dj = -1; dj <= 1; dj++) {
+      // Deterministic pseudo-random feature point within each cell
+      var cx = ix + di + _hash2(ix + di, iy + dj);
+      var cy = iy + dj + _hash2(ix + di + 100, iy + dj + 100);
+      var dx = x - cx, dy = y - cy;
+      var d = Math.sqrt(dx * dx + dy * dy);
+      // Track two nearest distances for F1/F2 patterns
+      if (d < f1) { f2 = f1; f1 = d; } else if (d < f2) { f2 = d; }
+    }
+  }
+  return [f1, f2];
+}
+
+function worley3D(x, y, z) {
+  var ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+  var f1 = 1e10, f2 = 1e10;
+  // Search 3x3x3 neighborhood of cells for closest feature points
+  for (var di = -1; di <= 1; di++) {
+    for (var dj = -1; dj <= 1; dj++) {
+      for (var dk = -1; dk <= 1; dk++) {
+        // Deterministic pseudo-random feature point within each 3D cell
+        var cx = ix + di + _hash3(ix + di, iy + dj, iz + dk);
+        var cy = iy + dj + _hash3(ix + di + 100, iy + dj + 100, iz + dk + 100);
+        var cz = iz + dk + _hash3(ix + di + 200, iy + dj + 200, iz + dk + 200);
+        var dx = x - cx, dy = y - cy, dz = z - cz;
+        var d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        // Track two nearest distances for F1/F2 patterns
+        if (d < f1) { f2 = f1; f1 = d; } else if (d < f2) { f2 = d; }
+      }
+    }
+  }
+  return [f1, f2];
+}
+
+// --- Material properties ---
+// Allows user code to override PBR material settings (roughness, metalness, opacity)
+var _materialProps = {};
+function setMaterial(props) {
+  if (props.roughness !== undefined) _materialProps.roughness = props.roughness;
+  if (props.metalness !== undefined) _materialProps.metalness = props.metalness;
+  if (props.opacity !== undefined) _materialProps.opacity = props.opacity;
 }
 
 // Initial capacity — arrays grow dynamically as needed (no hard limit)
@@ -278,6 +335,21 @@ function sdHexPrism(px,py,pz, h,r) {
   return Math.sqrt(Math.max(d,0)*Math.max(d,0) + Math.max(Math.abs(py)-h,0)*Math.max(Math.abs(py)-h,0)) + Math.min(Math.max(d,Math.abs(py)-h),0);
 }
 
+// Tapered cylinder: linearly interpolates radius from r1 at bottom (-h) to r2 at top (+h),
+// centered at origin along the Y axis. Combines radial and vertical distance components.
+function sdTaperedCylinder(px, py, pz, r1, r2, h) {
+  // Interpolation parameter: 0 at bottom (-h), 1 at top (+h)
+  var t = Math.max(0, Math.min(1, (py + h) / (2 * h)));
+  // Radius at the current height via linear interpolation
+  var r = r1 + (r2 - r1) * t;
+  // Radial distance from the tapered surface
+  var d = Math.sqrt(px * px + pz * pz) - r;
+  // Vertical distance from the capped ends
+  var dy = Math.abs(py) - h;
+  // Combine radial and vertical distances using standard box-distance formula
+  return Math.sqrt(Math.max(d, 0) ** 2 + Math.max(dy, 0) ** 2) + Math.min(Math.max(d, dy), 0);
+}
+
 // =========================================================================
 // SDF Operators — Combine or modify signed distance fields
 // =========================================================================
@@ -350,6 +422,13 @@ function domainBend(px, py, k) {
   return [px * c - py * s, px * s + py * c];
 }
 
+// Rotate around Y axis by angle theta — standard 2D rotation in the XZ plane
+// Returns [rx, rz] to use instead of [px, pz]
+function domainRotateY(px, pz, theta) {
+  var c = Math.cos(theta), s = Math.sin(theta);
+  return [px * c - pz * s, px * s + pz * c];
+}
+
 // =========================================================================
 // Smooth normal mesh buffer
 // =========================================================================
@@ -409,7 +488,7 @@ var MC_TRI_TABLE = [[-1],
 // sdfMesh() — Marching Cubes iso-surface extraction from an SDF function
 // =========================================================================
 function sdfMesh(sdfFn, colorFn, bMin, bMax, resolution) {
-  var res = resolution || 32;
+  var res = resolution || 64;
   var nx = res + 1, ny = res + 1, nz = res + 1;
 
   // Bounding box dimensions and cell size
@@ -698,14 +777,29 @@ function torusMesh(cx, cy, cz, majorR, minorR, r, g, b, res) {
 }
 
 self.onmessage = function(e) {
-  const { code, seed, sceneBounds } = e.data;
+  const { code, seed, sceneBounds, layerMetas } = e.data;
   _seed = seed || 42;
+
+  // Build LAYERS object from previous layer metadata for spatial referencing
+  var LAYERS = {};
+  if (layerMetas) {
+    for (var i = 0; i < layerMetas.length; i++) {
+      var lm = layerMetas[i];
+      LAYERS[lm.id] = {
+        bounds: { min: lm.bounds.min, max: lm.bounds.max, center: lm.bounds.center },
+        center: lm.bounds.center,
+        description: lm.description,
+        vertexCount: lm.meshVertexCount
+      };
+    }
+  }
   _meshCount = 0;
   _meshCap = 300000;
   _meshPositions = new Float32Array(_meshCap * 3);
   _meshColors = new Float32Array(_meshCap * 3);
   _meshNormals = new Float32Array(_meshCap * 3);
   _hasCustomNormals = false;
+  _materialProps = {};
 
   const SCENE_MIN_X = sceneBounds.min[0];
   const SCENE_MAX_X = sceneBounds.max[0];
@@ -722,34 +816,40 @@ self.onmessage = function(e) {
       "emitTriangle", "emitQuad",
       "box", "extrudePath", "grid", "sdfMesh", "lathe",
       "sdSphere", "sdBox", "sdCapsule", "sdTorus", "sdCone", "sdPlane", "sdCylinder",
-      "sdEllipsoid", "sdOctahedron", "sdHexPrism",
+      "sdEllipsoid", "sdOctahedron", "sdHexPrism", "sdTaperedCylinder",
       "opUnion", "opSubtract", "opIntersect",
       "opSmoothUnion", "opSmoothSubtract", "opSmoothIntersect",
       "opRound", "opDisplace",
       "opXOR", "opChamfer", "opStairs", "opShell", "opOnion",
-      "domainMirror", "domainRepeat", "domainTwist", "domainBend",
-      "noise2D", "noise3D", "fbm2D", "fbm3D", "random", "Math",
+      "domainMirror", "domainRepeat", "domainTwist", "domainBend", "domainRotateY",
+      "noise2D", "noise3D", "fbm2D", "fbm3D", "worley2D", "worley3D",
+      "random", "Math",
       "SCENE_MIN_X", "SCENE_MAX_X", "SCENE_MIN_Y", "SCENE_MAX_Y",
       "SCENE_MIN_Z", "SCENE_MAX_Z", "SCENE_CENTER_X", "SCENE_CENTER_Y",
       "SCENE_CENTER_Z",
       "sphereMesh", "boxMesh", "cylinderMesh", "torusMesh",
+      "setMaterial",
+      "LAYERS",
       code
     );
     fn(
       emitTriangle, emitQuad,
       box, extrudePath, grid, sdfMesh, lathe,
       sdSphere, sdBox, sdCapsule, sdTorus, sdCone, sdPlane, sdCylinder,
-      sdEllipsoid, sdOctahedron, sdHexPrism,
+      sdEllipsoid, sdOctahedron, sdHexPrism, sdTaperedCylinder,
       opUnion, opSubtract, opIntersect,
       opSmoothUnion, opSmoothSubtract, opSmoothIntersect,
       opRound, opDisplace,
       opXOR, opChamfer, opStairs, opShell, opOnion,
-      domainMirror, domainRepeat, domainTwist, domainBend,
-      noise2D, noise3D, fbm2D, fbm3D, _mulberry32, Math,
+      domainMirror, domainRepeat, domainTwist, domainBend, domainRotateY,
+      noise2D, noise3D, fbm2D, fbm3D, worley2D, worley3D,
+      _mulberry32, Math,
       SCENE_MIN_X, SCENE_MAX_X, SCENE_MIN_Y, SCENE_MAX_Y,
       SCENE_MIN_Z, SCENE_MAX_Z, SCENE_CENTER_X, SCENE_CENTER_Y,
       SCENE_CENTER_Z,
-      sphereMesh, boxMesh, cylinderMesh, torusMesh
+      sphereMesh, boxMesh, cylinderMesh, torusMesh,
+      setMaterial,
+      LAYERS
     );
   } catch (err) {
     // Send structured error back with partial progress info
@@ -768,7 +868,7 @@ self.onmessage = function(e) {
   const transferables = [meshPositions.buffer, meshColors.buffer];
   if (_hasCustomNormals) transferables.push(meshNormals.buffer);
   self.postMessage(
-    { meshPositions, meshColors, meshVertexCount: _meshCount, meshNormals: _hasCustomNormals ? meshNormals : null, hasCustomNormals: _hasCustomNormals },
+    { meshPositions, meshColors, meshVertexCount: _meshCount, meshNormals: _hasCustomNormals ? meshNormals : null, hasCustomNormals: _hasCustomNormals, materialProps: _materialProps },
     transferables
   );
 };
@@ -793,6 +893,7 @@ export function executeProceduralCode(
   code: string,
   bounds: SceneBounds,
   seed?: number,
+  layerMetas?: LayerMeta[],
 ): Promise<GeneratedLayer> {
   // AST validation — reject dangerous code before creating the worker
   const validation = validateCode(code);
@@ -857,12 +958,14 @@ export function executeProceduralCode(
         meshVertexCount,
         meshNormals,
         hasCustomNormals,
+        materialProps,
       } = e.data as {
         meshPositions: Float32Array;
         meshColors: Float32Array;
         meshVertexCount: number;
         meshNormals: Float32Array | null;
         hasCustomNormals: boolean;
+        materialProps: MaterialProps;
       };
       const layer: GeneratedLayer = {
         id: `layer-${_nextLayerId++}`,
@@ -873,6 +976,9 @@ export function executeProceduralCode(
       if (hasCustomNormals && meshNormals) {
         layer.meshNormals = meshNormals;
         layer.hasCustomNormals = true;
+      }
+      if (materialProps && Object.keys(materialProps).length > 0) {
+        layer.materialProps = materialProps;
       }
 
       // Validate mesh output — reject if hard errors, log warnings
@@ -905,6 +1011,7 @@ export function executeProceduralCode(
       code,
       seed: seed ?? Math.floor(Math.random() * 0xffffffff),
       sceneBounds: bounds,
+      layerMetas: layerMetas ?? [],
     });
   });
 }

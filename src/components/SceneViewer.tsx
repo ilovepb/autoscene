@@ -71,7 +71,9 @@ export function SceneViewer({ overlay, onSceneReady }: Props) {
 
       handle.updateMovement(dt);
       handle.controls.update();
-      handle.renderer.render(handle.scene, handle.camera);
+      // Use the post-processing composer instead of direct renderer.render()
+      // — the composer's RenderPass handles the scene render internally
+      handle.composer.render();
       rafRef.current = requestAnimationFrame(animate);
     }
 

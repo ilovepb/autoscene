@@ -1,5 +1,11 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { SSAOPass } from "three/addons/postprocessing/SSAOPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import type { GeneratedLayer } from "@/lib/procedural/engine";
 
 export interface SceneHandle {
@@ -7,6 +13,8 @@ export interface SceneHandle {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   controls: OrbitControls;
+  /** Post-processing effect composer — call composer.render() instead of renderer.render(). */
+  composer: EffectComposer;
   resize: (width: number, height: number) => void;
   dispose: () => void;
   /** Call each frame to apply WASD/arrow-key movement. */
@@ -21,6 +29,8 @@ export interface SceneHandle {
   clearLayers: () => void;
   /** Get all procedural layer IDs. */
   getLayerIds: () => string[];
+  /** Set visibility of a procedural layer by id. */
+  setLayerVisible: (id: string, visible: boolean) => void;
 }
 
 /**
@@ -37,25 +47,76 @@ export function createScene(
   // -----------------------------------------------------------------------
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(width, height);
-  renderer.setClearColor(0x000000, 1);
+  // Dark blue-black clear color to blend with environment lighting
+  renderer.setClearColor(0x0a0a0f, 1);
+  // ACES Filmic tone mapping compresses HDR highlights into LDR range
+  // with a film-like S-curve, preserving detail in bright areas
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.0;
+  // Enable shadow maps with PCF soft filtering for smooth shadow edges
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   const scene = new THREE.Scene();
 
   // -----------------------------------------------------------------------
+  // Environment map — procedural IBL for realistic material reflections
+  // -----------------------------------------------------------------------
+  // PMREMGenerator pre-filters an environment map into mip levels suitable
+  // for roughness-based image-based lighting (IBL) on MeshStandardMaterial.
+  // RoomEnvironment provides a neutral indoor lighting setup without needing
+  // to load an external HDRI texture.
+  const pmremGenerator = new THREE.PMREMGenerator(renderer);
+  pmremGenerator.compileEquirectangularShader();
+  scene.environment = pmremGenerator.fromScene(new RoomEnvironment()).texture;
+  pmremGenerator.dispose();
+  // Dial back IBL intensity so it provides subtle fill/reflections without
+  // washing out surface contrast. Full intensity makes everything look milky.
+  scene.environmentIntensity = 0.35;
+
+  // -----------------------------------------------------------------------
   // Lighting
   // -----------------------------------------------------------------------
-  // Hemisphere light provides soft, even illumination from all directions —
-  // sky color from above, ground color from below.
-  const hemiLight = new THREE.HemisphereLight(0xffffff, 0x888888, 0.8);
-  scene.add(hemiLight);
-  // Key light from upper-right-front
-  const keyLight = new THREE.DirectionalLight(0xffffff, 0.8);
-  keyLight.position.set(1, 2, 3);
+
+  // Key directional light — primary shadow caster from upper-right-front.
+  // Positioned at (2, 4, 1) aiming at scene center (0, 0, -3).
+  // Higher intensity (1.8) compensates for reduced env map and removed hemisphere.
+  const keyLight = new THREE.DirectionalLight(0xffffff, 1.8);
+  keyLight.position.set(2, 4, 1);
+  keyLight.target.position.set(0, 0, -3);
+  // The target must be added to the scene so its world matrix is updated,
+  // otherwise the light direction won't track the target position.
+  scene.add(keyLight.target);
+  keyLight.castShadow = true;
+  // 2048x2048 shadow map for crisp shadow detail
+  keyLight.shadow.mapSize.width = 2048;
+  keyLight.shadow.mapSize.height = 2048;
+  // Small negative bias prevents shadow acne (surface self-shadowing artifacts)
+  keyLight.shadow.bias = -0.0005;
   scene.add(keyLight);
-  // Fill light from lower-left-back at lower intensity to soften shadows
-  const fillLight = new THREE.DirectionalLight(0xffffff, 0.4);
-  fillLight.position.set(-1, -1, -2);
+
+  // Fill light from left-rear to soften harsh shadows — no shadow casting
+  // to keep the shadow map cost low (only key light casts shadows).
+  const fillLight = new THREE.DirectionalLight(0xffffff, 0.5);
+  fillLight.position.set(-2, 1, -5);
   scene.add(fillLight);
+
+  // -----------------------------------------------------------------------
+  // Ground plane — invisible shadow receiver
+  // -----------------------------------------------------------------------
+  // A horizontal plane at Y=-1.5 (bottom of scene volume) using ShadowMaterial
+  // which is fully transparent except where shadows fall. This grounds objects
+  // visually without adding a visible floor surface.
+  const groundGeo = new THREE.PlaneGeometry(20, 20);
+  const groundMat = new THREE.ShadowMaterial({ opacity: 0.3 });
+  const groundPlane = new THREE.Mesh(groundGeo, groundMat);
+  // Rotate from default XY orientation to horizontal XZ plane
+  groundPlane.rotation.x = -Math.PI / 2;
+  groundPlane.position.y = -1.5;
+  groundPlane.receiveShadow = true;
+  // Tag for identification so we can exclude from GLB export
+  groundPlane.userData.isGroundPlane = true;
+  scene.add(groundPlane);
 
   // -----------------------------------------------------------------------
   // Camera
@@ -76,6 +137,43 @@ export function createScene(
   controls.dampingFactor = 0.1;
   controls.target.set(0, 0, -3);
   controls.update();
+
+  // -----------------------------------------------------------------------
+  // Post-processing — SSAO + Bloom via EffectComposer
+  // -----------------------------------------------------------------------
+  // The composer chains render passes: scene render → SSAO (ambient occlusion
+  // in screen space) → Bloom (glow on bright areas) → OutputPass (tone mapping
+  // and color space conversion for final display).
+  const composer = new EffectComposer(renderer);
+
+  // RenderPass draws the scene into the composer's framebuffer
+  const renderPass = new RenderPass(scene, camera);
+  composer.addPass(renderPass);
+
+  // SSAOPass adds screen-space ambient occlusion — darkens crevices and
+  // contact areas for depth perception. Small kernel radius keeps the
+  // effect subtle and localized.
+  const ssaoPass = new SSAOPass(scene, camera, width, height);
+  ssaoPass.kernelRadius = 0.3;
+  ssaoPass.minDistance = 0.001;
+  ssaoPass.maxDistance = 0.05;
+  composer.addPass(ssaoPass);
+
+  // UnrealBloomPass adds a soft glow to bright areas. Low strength (0.15)
+  // and high threshold (0.9) keep bloom minimal — only specular highlights
+  // and emissive regions glow, avoiding a washed-out look.
+  const bloomPass = new UnrealBloomPass(
+    new THREE.Vector2(width, height),
+    0.15, // strength
+    0.4, // radius
+    0.9, // threshold
+  );
+  composer.addPass(bloomPass);
+
+  // OutputPass applies tone mapping and converts to the output color space
+  // (sRGB). Must be the last pass in the chain.
+  const outputPass = new OutputPass();
+  composer.addPass(outputPass);
 
   // -----------------------------------------------------------------------
   // WASD / arrow-key walking
@@ -155,6 +253,13 @@ export function createScene(
       new THREE.BufferAttribute(layer.meshColors, 3),
     );
 
+    // Read per-layer material properties from procedural code, falling back
+    // to sensible defaults (matte, non-metallic, fully opaque).
+    const roughness = layer.materialProps?.roughness ?? 0.55;
+    const metalness = layer.materialProps?.metalness ?? 0.0;
+    const opacity = layer.materialProps?.opacity ?? 1.0;
+    const transparent = opacity < 1.0;
+
     let meshMaterial: THREE.MeshStandardMaterial;
 
     // When the layer includes custom per-vertex normals (e.g., from SDF
@@ -169,8 +274,9 @@ export function createScene(
       meshMaterial = new THREE.MeshStandardMaterial({
         vertexColors: true,
         side: THREE.DoubleSide,
-        roughness: 0.55,
-        metalness: 0.0,
+        roughness,
+        metalness,
+        ...(transparent ? { opacity, transparent: true } : {}),
         flatShading: false,
       });
     } else {
@@ -178,13 +284,17 @@ export function createScene(
       meshMaterial = new THREE.MeshStandardMaterial({
         vertexColors: true,
         side: THREE.DoubleSide,
-        roughness: 0.55,
-        metalness: 0.0,
+        roughness,
+        metalness,
+        ...(transparent ? { opacity, transparent: true } : {}),
         flatShading: true,
       });
     }
 
     const meshObj = new THREE.Mesh(meshGeometry, meshMaterial);
+    // Enable shadow casting and receiving for realistic grounding
+    meshObj.castShadow = true;
+    meshObj.receiveShadow = true;
     scene.add(meshObj);
 
     layers.set(layer.id, {
@@ -213,8 +323,16 @@ export function createScene(
     return Array.from(layers.keys());
   }
 
+  function setLayerVisible(id: string, visible: boolean): void {
+    const entry = layers.get(id);
+    if (entry) {
+      entry.meshObj.visible = visible;
+    }
+  }
+
   function resize(w: number, h: number): void {
     renderer.setSize(w, h);
+    composer.setSize(w, h);
     camera.aspect = w / h;
     // After changing the aspect ratio, recompute the projection matrix
     camera.updateProjectionMatrix();
@@ -226,6 +344,12 @@ export function createScene(
       keyboardEl.removeEventListener("keyup", onKeyUp);
     }
     clearLayers();
+    // Clean up ground plane GPU resources
+    groundGeo.dispose();
+    groundMat.dispose();
+    scene.remove(groundPlane);
+    // Dispose post-processing render targets and passes
+    composer.dispose();
     renderer.dispose();
     controls.dispose();
   }
@@ -235,6 +359,7 @@ export function createScene(
     scene,
     camera,
     controls,
+    composer,
     resize,
     dispose,
     updateMovement,
@@ -243,5 +368,6 @@ export function createScene(
     removeLayer,
     clearLayers,
     getLayerIds,
+    setLayerVisible,
   };
 }
